@@ -49,6 +49,20 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 komutu bulunamadı"
 }
 
+check_command() {
+  local label="$1"
+  local command="$2"
+  local output=""
+
+  if output="$(eval "$command" 2>&1)"; then
+    echo -e "${GREEN}TAMAM:${NC} $label -> $output"
+  else
+    echo -e "${RED}HATA:${NC} $label kontrolü başarısız"
+    echo "$output"
+    exit 1
+  fi
+}
+
 print_header() {
   echo -e "${CYAN}"
   echo "=================================================="
@@ -79,7 +93,7 @@ resolve_supabase_version() {
     fail "Geçersiz SUPABASE_CHANNEL: $SUPABASE_CHANNEL. stable veya latest kullan"
   fi
 
-  ok "Supabase CLI sürümü: $SUPABASE_VERSION"
+  ok "Supabase CLI sürümü çözümlendi: $SUPABASE_VERSION"
 }
 
 print_header
@@ -110,6 +124,7 @@ sudo apt install -y \
   htop \
   lsb-release \
   postgresql-client
+
 ok "Temel paketler kuruldu"
 
 resolve_supabase_version
@@ -123,6 +138,7 @@ sudo apt remove -y \
   podman-docker \
   containerd \
   runc || true
+
 ok "Çakışabilecek Docker paketleri kaldırıldı veya zaten yoktu"
 
 step "4. Docker resmi apt deposu ekleniyor"
@@ -152,6 +168,7 @@ sudo apt install -y \
   containerd.io \
   docker-buildx-plugin \
   docker-compose-plugin
+
 ok "Docker Engine kuruldu"
 
 step "6. Docker servisi etkinleştiriliyor"
@@ -193,12 +210,14 @@ step "9. Node.js $NODE_VERSION kuruluyor"
 fnm install "$NODE_VERSION"
 fnm default "$NODE_VERSION"
 fnm use "$NODE_VERSION"
+
 require_command node
 ok "Node.js kuruldu: $(node -v)"
 
 step "10. Corepack ile pnpm etkinleştiriliyor"
 corepack enable
 corepack prepare pnpm@latest --activate
+
 require_command pnpm
 ok "pnpm kuruldu: $(pnpm -v)"
 
@@ -255,16 +274,15 @@ sudo install -m 0755 "$TMP_DIR/supabase" /usr/local/bin/supabase
 require_command supabase
 ok "Supabase CLI kuruldu: $(supabase --version)"
 
-step "13. Sürüm kontrolleri"
-echo "Node.js:        $(node -v)"
-echo "pnpm:           $(pnpm -v)"
-echo "Deno:           $(deno --version | head -n 1)"
-echo "Supabase CLI:   $(supabase --version)"
-echo "Docker:         $(docker --version)"
-echo "Docker Compose:"
-docker compose version
-echo "PostgreSQL:"
-psql --version
+step "13. Kurulum kontrolleri"
+check_command "Supabase CLI yolu" "which supabase"
+check_command "Supabase CLI sürümü" "supabase --version"
+check_command "Docker sürümü" "docker --version"
+check_command "Docker Compose sürümü" "docker compose version"
+check_command "Node.js sürümü" "node -v"
+check_command "pnpm sürümü" "pnpm -v"
+check_command "Deno sürümü" "deno --version | head -n 1"
+check_command "PostgreSQL client sürümü" "psql --version"
 
 step "14. İsteğe bağlı Docker testi"
 if ask_yes_no "Docker hello-world testi çalıştırılsın mı? Grup yetkisi aktif değilse reboot sonrası çalışabilir." "N"; then
@@ -278,16 +296,22 @@ echo ""
 warn "Önemli sonraki adım:"
 echo "  sudo reboot"
 echo ""
-echo "Reboot sonrası kontrol:"
-echo "  docker run hello-world"
+echo "Reboot sonrası kontrol için:"
+echo "  which supabase"
 echo "  supabase --version"
+echo "  docker --version"
 echo "  docker compose version"
+echo "  node -v"
+echo "  pnpm -v"
+echo "  deno --version"
+echo "  psql --version"
 echo ""
 echo "Sonra private Supabase proje reposunu clone et:"
 echo "  git clone git@github.com:<your-user-or-org>/otonorm-supabase.git"
 echo "  cd otonorm-supabase"
 echo ""
 echo "Ardından proje README dosyasındaki adımları takip et."
+
 if ask_yes_no "Şimdi reboot edilsin mi?" "N"; then
   sudo reboot
 fi
