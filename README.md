@@ -251,7 +251,7 @@ chmod +x reset_supabase.sh
 ### Tek komutla çalıştırma
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh)
+bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh?$(date +%s)")
 ```
 
 > Not: Reset scripti interaktif çalışır. Hedef klasörü ve yapmak istediğin işlemi sorar.
