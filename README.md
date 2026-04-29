@@ -44,11 +44,13 @@ Migration çalıştırmaz
 Seed verisi yüklemez
 ```
 
-Bu ayrım bilinçlidir. Bu repo public kalabilir; gerçek proje kaynakları private repoda durmalıdır.
+Bu repo public kalabilir; gerçek proje kaynakları private repoda durmalıdır.
 
 ## Kurulum
 
-Ubuntu sunucuda çalıştır:
+### Repo clone ile kurulum
+
+HTTPS ile:
 
 ```bash
 git clone https://github.com/alirizagurtas/supabase-bootstrap.git
@@ -57,7 +59,7 @@ chmod +x install_supabase.sh
 ./install_supabase.sh
 ```
 
-SSH ile clone etmek istersen:
+SSH ile:
 
 ```bash
 git clone git@github.com:alirizagurtas/supabase-bootstrap.git
@@ -67,6 +69,32 @@ chmod +x install_supabase.sh
 ```
 
 SSH kullanımı için sunucuda GitHub SSH key tanımlı olmalıdır.
+
+### Tek dosya indirip kurulum
+
+`curl` ile:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh -o install_supabase.sh
+chmod +x install_supabase.sh
+./install_supabase.sh
+```
+
+`wget` ile:
+
+```bash
+wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh -O install_supabase.sh
+chmod +x install_supabase.sh
+./install_supabase.sh
+```
+
+### Tek komutla kurulum
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh)
+```
+
+> Not: Script interaktif çalışır. Devam etmek isteyip istemediğini sorar.
 
 ## Sürüm seçimi
 
@@ -104,6 +132,12 @@ Node.js sürümünü değiştirmek için:
 NODE_VERSION=24 ./install_supabase.sh
 ```
 
+Tek komutla latest kurmak için:
+
+```bash
+SUPABASE_CHANNEL=latest bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh)
+```
+
 ## Stable ve latest farkı
 
 ```txt
@@ -114,8 +148,8 @@ latest = GitHub latest release bilgisinden son Supabase CLI sürümünü çözer
 Önerilen kullanım:
 
 ```txt
-Test VM / geçici kurulum       = latest kullanılabilir
-Tekrarlanabilir kurulum        = stable + exact version
+Test VM / geçici kurulum = latest kullanılabilir
+Tekrarlanabilir kurulum  = stable + exact version
 ```
 
 ## Kurulum sonrası
@@ -166,13 +200,6 @@ otonorm-supabase/
 
 `reset_supabase.sh`, mevcut local Supabase/Docker ortamını temizlemek için yardımcı script’tir.
 
-Çalıştır:
-
-```bash
-chmod +x reset_supabase.sh
-./reset_supabase.sh
-```
-
 Script önce hedef klasörü sorar. Varsayılan hedef:
 
 ```txt
@@ -180,6 +207,54 @@ Script önce hedef klasörü sorar. Varsayılan hedef:
 ```
 
 Sonra ne yapmak istediğini sorar.
+
+## Reset scriptini çalıştırma seçenekleri
+
+### Repo clone ile çalıştırma
+
+HTTPS ile:
+
+```bash
+git clone https://github.com/alirizagurtas/supabase-bootstrap.git
+cd supabase-bootstrap
+chmod +x reset_supabase.sh
+./reset_supabase.sh
+```
+
+SSH ile:
+
+```bash
+git clone git@github.com:alirizagurtas/supabase-bootstrap.git
+cd supabase-bootstrap
+chmod +x reset_supabase.sh
+./reset_supabase.sh
+```
+
+### Tek dosya indirip çalıştırma
+
+`curl` ile:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh -o reset_supabase.sh
+chmod +x reset_supabase.sh
+./reset_supabase.sh
+```
+
+`wget` ile:
+
+```bash
+wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh -O reset_supabase.sh
+chmod +x reset_supabase.sh
+./reset_supabase.sh
+```
+
+### Tek komutla çalıştırma
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh)
+```
+
+> Not: Reset scripti interaktif çalışır. Hedef klasörü ve yapmak istediğin işlemi sorar.
 
 ## Reset seçenekleri
 
