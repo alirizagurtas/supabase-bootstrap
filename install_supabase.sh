@@ -17,15 +17,15 @@ step() {
 }
 
 ok() {
-  echo -e "${GREEN}OK:${NC} $1"
+  echo -e "${GREEN}TAMAM:${NC} $1"
 }
 
 warn() {
-  echo -e "${YELLOW}WARN:${NC} $1"
+  echo -e "${YELLOW}UYARI:${NC} $1"
 }
 
 fail() {
-  echo -e "${RED}ERROR:${NC} $1"
+  echo -e "${RED}HATA:${NC} $1"
   exit 1
 }
 
@@ -46,13 +46,13 @@ ask_yes_no() {
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "$1 command not found"
+  command -v "$1" >/dev/null 2>&1 || fail "$1 komutu bulunamadı"
 }
 
 print_header() {
   echo -e "${CYAN}"
   echo "=================================================="
-  echo " Supabase Bootstrap"
+  echo " Supabase Kurulum Yardımcısı"
   echo " Ubuntu + Docker + Node + pnpm + Deno + psql"
   echo " Supabase CLI: standalone binary"
   echo "=================================================="
@@ -61,7 +61,7 @@ print_header() {
 
 resolve_supabase_version() {
   if [ "$SUPABASE_CHANNEL" = "latest" ]; then
-    step "Resolve latest Supabase CLI version"
+    step "En güncel Supabase CLI sürümü çözümleniyor"
 
     require_command curl
     require_command jq
@@ -73,33 +73,33 @@ resolve_supabase_version() {
     )"
 
     if [ -z "$SUPABASE_VERSION" ] || [ "$SUPABASE_VERSION" = "null" ]; then
-      fail "Could not resolve latest Supabase CLI version"
+      fail "En güncel Supabase CLI sürümü çözümlenemedi"
     fi
   elif [ "$SUPABASE_CHANNEL" != "stable" ]; then
-    fail "Invalid SUPABASE_CHANNEL: $SUPABASE_CHANNEL. Use stable or latest."
+    fail "Geçersiz SUPABASE_CHANNEL: $SUPABASE_CHANNEL. stable veya latest kullan"
   fi
 
-  ok "Supabase CLI version resolved: $SUPABASE_VERSION"
+  ok "Supabase CLI sürümü: $SUPABASE_VERSION"
 }
 
 print_header
 
-step "Target"
-echo "Node version:      $NODE_VERSION"
-echo "Supabase channel:  $SUPABASE_CHANNEL"
-echo "Supabase CLI:      $SUPABASE_VERSION"
+step "Hedef"
+echo "Node.js sürümü:       $NODE_VERSION"
+echo "Supabase kanalı:      $SUPABASE_CHANNEL"
+echo "Supabase CLI sürümü:  $SUPABASE_VERSION"
 
-if ! ask_yes_no "Continue setup?" "Y"; then
-  warn "Setup cancelled."
+if ! ask_yes_no "Kuruluma devam edilsin mi?" "Y"; then
+  warn "Kurulum iptal edildi."
   exit 0
 fi
 
-step "1. System update"
+step "1. Sistem güncelleniyor"
 sudo apt update
 sudo apt upgrade -y
-ok "System updated"
+ok "Sistem güncellendi"
 
-step "2. Install base packages"
+step "2. Temel paketler kuruluyor"
 sudo apt install -y \
   ca-certificates \
   curl \
@@ -110,11 +110,11 @@ sudo apt install -y \
   htop \
   lsb-release \
   postgresql-client
-ok "Base packages installed"
+ok "Temel paketler kuruldu"
 
 resolve_supabase_version
 
-step "3. Remove conflicting Docker packages"
+step "3. Çakışabilecek Docker paketleri kaldırılıyor"
 sudo apt remove -y \
   docker.io \
   docker-compose \
@@ -123,9 +123,9 @@ sudo apt remove -y \
   podman-docker \
   containerd \
   runc || true
-ok "Docker conflicts removed or not present"
+ok "Çakışabilecek Docker paketleri kaldırıldı veya zaten yoktu"
 
-step "4. Add Docker official apt repository"
+step "4. Docker resmi apt deposu ekleniyor"
 sudo install -m 0755 -d /etc/apt/keyrings
 
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -143,31 +143,31 @@ Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
 sudo apt update
-ok "Docker repository added"
+ok "Docker apt deposu eklendi"
 
-step "5. Install Docker Engine"
+step "5. Docker Engine kuruluyor"
 sudo apt install -y \
   docker-ce \
   docker-ce-cli \
   containerd.io \
   docker-buildx-plugin \
   docker-compose-plugin
-ok "Docker Engine installed"
+ok "Docker Engine kuruldu"
 
-step "6. Enable Docker service"
+step "6. Docker servisi etkinleştiriliyor"
 sudo systemctl enable --now docker
-ok "Docker service enabled"
+ok "Docker servisi etkinleştirildi"
 
-step "7. Add current user to docker group"
+step "7. Geçerli kullanıcı docker grubuna ekleniyor"
 sudo usermod -aG docker "$USER"
-warn "Docker group permission requires logout/login or reboot"
-ok "User added to docker group"
+warn "Docker grup yetkisi için logout/login veya reboot gerekir"
+ok "Kullanıcı docker grubuna eklendi"
 
-step "8. Install fnm"
+step "8. fnm kuruluyor"
 if [ ! -x "$HOME/.local/share/fnm/fnm" ]; then
   curl -fsSL https://fnm.vercel.app/install | bash
 else
-  ok "fnm already installed"
+  ok "fnm zaten kurulu"
 fi
 
 export PATH="$HOME/.local/share/fnm:$PATH"
@@ -175,7 +175,7 @@ export PATH="$HOME/.local/share/fnm:$PATH"
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --use-on-cd --shell bash)"
 else
-  fail "fnm installation failed"
+  fail "fnm kurulumu başarısız oldu"
 fi
 
 if ! grep -q 'fnm env' "$HOME/.bashrc"; then
@@ -187,22 +187,22 @@ if ! grep -q 'fnm env' "$HOME/.bashrc"; then
   } >> "$HOME/.bashrc"
 fi
 
-ok "fnm installed"
+ok "fnm kuruldu"
 
-step "9. Install Node.js $NODE_VERSION"
+step "9. Node.js $NODE_VERSION kuruluyor"
 fnm install "$NODE_VERSION"
 fnm default "$NODE_VERSION"
 fnm use "$NODE_VERSION"
 require_command node
-ok "Node.js installed: $(node -v)"
+ok "Node.js kuruldu: $(node -v)"
 
-step "10. Enable pnpm via Corepack"
+step "10. Corepack ile pnpm etkinleştiriliyor"
 corepack enable
 corepack prepare pnpm@latest --activate
 require_command pnpm
-ok "pnpm installed: $(pnpm -v)"
+ok "pnpm kuruldu: $(pnpm -v)"
 
-step "11. Install Deno"
+step "11. Deno kuruluyor"
 if ! command -v deno >/dev/null 2>&1; then
   curl -fsSL https://deno.land/install.sh | sh
 fi
@@ -220,9 +220,9 @@ if ! grep -q 'DENO_INSTALL' "$HOME/.bashrc"; then
 fi
 
 require_command deno
-ok "Deno installed: $(deno --version | head -n 1)"
+ok "Deno kuruldu: $(deno --version | head -n 1)"
 
-step "12. Install Supabase CLI standalone binary"
+step "12. Supabase CLI standalone binary kuruluyor"
 SUPABASE_ARCH="$(uname -m)"
 
 case "$SUPABASE_ARCH" in
@@ -233,7 +233,7 @@ case "$SUPABASE_ARCH" in
     SUPABASE_ASSET="supabase_linux_arm64.tar.gz"
     ;;
   *)
-    fail "Unsupported architecture for Supabase CLI: $SUPABASE_ARCH"
+    fail "Desteklenmeyen mimari: $SUPABASE_ARCH"
     ;;
 esac
 
@@ -247,48 +247,47 @@ curl -fsSL \
 tar -xzf "$TMP_DIR/supabase.tar.gz" -C "$TMP_DIR"
 
 if [ ! -f "$TMP_DIR/supabase" ]; then
-  fail "Supabase binary not found in archive"
+  fail "Arşiv içinde Supabase binary bulunamadı"
 fi
 
 sudo install -m 0755 "$TMP_DIR/supabase" /usr/local/bin/supabase
 
 require_command supabase
-ok "Supabase CLI installed: $(supabase --version)"
+ok "Supabase CLI kuruldu: $(supabase --version)"
 
-step "13. Version checks"
-echo "Node:          $(node -v)"
-echo "pnpm:          $(pnpm -v)"
-echo "Deno:          $(deno --version | head -n 1)"
-echo "Supabase CLI:  $(supabase --version)"
-echo "Docker:        $(docker --version)"
+step "13. Sürüm kontrolleri"
+echo "Node.js:        $(node -v)"
+echo "pnpm:           $(pnpm -v)"
+echo "Deno:           $(deno --version | head -n 1)"
+echo "Supabase CLI:   $(supabase --version)"
+echo "Docker:         $(docker --version)"
 echo "Docker Compose:"
 docker compose version
 echo "PostgreSQL:"
 psql --version
 
-step "14. Optional Docker test"
-if ask_yes_no "Run docker hello-world test now? It may fail until logout/reboot if group permission is not active." "N"; then
-  docker run hello-world || warn "Docker test failed. Reboot or logout/login, then try again."
+step "14. İsteğe bağlı Docker testi"
+if ask_yes_no "Docker hello-world testi çalıştırılsın mı? Grup yetkisi aktif değilse reboot sonrası çalışabilir." "N"; then
+  docker run hello-world || warn "Docker testi başarısız oldu. Reboot veya logout/login sonrası tekrar dene."
 fi
 
-step "Done"
-ok "Supabase bootstrap completed"
+step "Tamamlandı"
+ok "Supabase kurulum hazırlığı tamamlandı"
 
 echo ""
-warn "Important next step:"
+warn "Önemli sonraki adım:"
 echo "  sudo reboot"
 echo ""
-echo "After reboot:"
+echo "Reboot sonrası kontrol:"
 echo "  docker run hello-world"
 echo "  supabase --version"
 echo "  docker compose version"
 echo ""
-echo "Then clone your private Supabase project repo:"
+echo "Sonra private Supabase proje reposunu clone et:"
 echo "  git clone git@github.com:<your-user-or-org>/otonorm-supabase.git"
 echo "  cd otonorm-supabase"
 echo ""
-echo "Then follow the project README."
-
-if ask_yes_no "Reboot now?" "N"; then
+echo "Ardından proje README dosyasındaki adımları takip et."
+if ask_yes_no "Şimdi reboot edilsin mi?" "N"; then
   sudo reboot
 fi
