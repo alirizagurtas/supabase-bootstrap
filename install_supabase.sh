@@ -2,6 +2,7 @@
 set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-24}"
+SUPABASE_CHANNEL="${SUPABASE_CHANNEL:-stable}"
 SUPABASE_VERSION="${SUPABASE_VERSION:-2.95.5}"
 
 RED='\033[0;31m'
@@ -58,10 +59,34 @@ print_header() {
   echo -e "${NC}"
 }
 
+resolve_supabase_version() {
+  if [ "$SUPABASE_CHANNEL" = "latest" ]; then
+    step "Resolve latest Supabase CLI version"
+
+    require_command curl
+    require_command jq
+
+    SUPABASE_VERSION="$(
+      curl -fsSL https://api.github.com/repos/supabase/cli/releases/latest |
+        jq -r '.tag_name' |
+        sed 's/^v//'
+    )"
+
+    if [ -z "$SUPABASE_VERSION" ] || [ "$SUPABASE_VERSION" = "null" ]; then
+      fail "Could not resolve latest Supabase CLI version"
+    fi
+  elif [ "$SUPABASE_CHANNEL" != "stable" ]; then
+    fail "Invalid SUPABASE_CHANNEL: $SUPABASE_CHANNEL. Use stable or latest."
+  fi
+
+  ok "Supabase CLI version resolved: $SUPABASE_VERSION"
+}
+
 print_header
 
 step "Target"
 echo "Node version:      $NODE_VERSION"
+echo "Supabase channel:  $SUPABASE_CHANNEL"
 echo "Supabase CLI:      $SUPABASE_VERSION"
 
 if ! ask_yes_no "Continue setup?" "Y"; then
@@ -86,6 +111,8 @@ sudo apt install -y \
   lsb-release \
   postgresql-client
 ok "Base packages installed"
+
+resolve_supabase_version
 
 step "3. Remove conflicting Docker packages"
 sudo apt remove -y \
@@ -254,6 +281,7 @@ echo ""
 echo "After reboot:"
 echo "  docker run hello-world"
 echo "  supabase --version"
+echo "  docker compose version"
 echo ""
 echo "Then clone your private Supabase project repo:"
 echo "  git clone git@github.com:<your-user-or-org>/otonorm-supabase.git"
