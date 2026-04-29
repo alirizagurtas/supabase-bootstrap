@@ -33,7 +33,7 @@ Migration çalıştırmaz
 Seed verisi yüklemez
 ```
 
-Bu ayrım bilinçlidir. Bu repo public kalabilir; gerçek proje kaynakları private repoda durmalıdır.
+Bu repo public kalabilir; gerçek proje kaynakları private repoda durmalıdır.
 
 ## Kullanım
 
@@ -57,19 +57,54 @@ chmod +x install_supabase.sh
 
 SSH kullanımı için sunucuda GitHub SSH key tanımlı olmalıdır.
 
-## Ortam değişkenleri
+## Sürüm seçimi
 
-Varsayılan Node.js ve Supabase CLI sürümünü değiştirebilirsin:
-
-```bash
-NODE_VERSION=24 SUPABASE_VERSION=2.95.5 ./install_supabase.sh
-```
+Varsayılan kurulum sabit Supabase CLI sürümü kullanır.
 
 Varsayılanlar:
 
 ```txt
 NODE_VERSION=24
+SUPABASE_CHANNEL=stable
 SUPABASE_VERSION=2.95.5
+```
+
+Normal kullanım:
+
+```bash
+./install_supabase.sh
+```
+
+Belirli Supabase CLI sürümü kurmak için:
+
+```bash
+SUPABASE_VERSION=2.96.0 ./install_supabase.sh
+```
+
+En güncel Supabase CLI release sürümünü kurmak için:
+
+```bash
+SUPABASE_CHANNEL=latest ./install_supabase.sh
+```
+
+Node.js sürümünü değiştirmek için:
+
+```bash
+NODE_VERSION=24 ./install_supabase.sh
+```
+
+## Stable ve latest farkı
+
+```txt
+stable = SUPABASE_VERSION değerini kullanır
+latest = GitHub latest release bilgisinden son Supabase CLI sürümünü çözer
+```
+
+Önerilen kullanım:
+
+```txt
+Test VM        = latest kullanılabilir
+Tekrarlanabilir kurulum = stable + exact version
 ```
 
 ## Kurulum sonrası
