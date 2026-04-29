@@ -177,7 +177,7 @@ psql --version
 Bootstrap tamamlandıktan sonra private Supabase proje reposunu clone et:
 
 ```bash
-git clone git@github.com:<your-user-or-org>/otonorm-supabase.git
+git clone git@github.com:alirizagurtas/supabase-autonorm.git
 cd otonorm-supabase
 ```
 
@@ -186,7 +186,7 @@ Sonra proje README dosyasındaki migration, seed ve deploy adımlarını takip e
 Örnek proje yapısı:
 
 ```txt
-otonorm-supabase/
+supabase-otonorm/
   supabase/
     schemas/
     migrations/
