@@ -147,8 +147,14 @@ remove_project_dir() {
     return
   fi
 
+  if [ "$PROJECT_DIR" = "/" ] || [ "$PROJECT_DIR" = "$HOME" ]; then
+    fail "Refusing to delete unsafe directory: $PROJECT_DIR"
+  fi
+
   step "Removing project directory"
-  
+
+  cd /tmp
+
   if rm -rf "$PROJECT_DIR" 2>/dev/null; then
     ok "Project directory removed: $PROJECT_DIR"
   else
