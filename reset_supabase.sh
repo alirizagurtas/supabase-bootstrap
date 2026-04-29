@@ -15,7 +15,7 @@ step() {
 }
 
 ok() {
-  echo -e "${GREEN}OK:${NC} $1"
+  echo -e "${GREEN}TAMAM:${NC} $1"
 }
 
 warn() {
@@ -46,7 +46,7 @@ ask_yes_no() {
 ask_project_dir() {
   local input=""
 
-  read -r -p "$(echo -e "${YELLOW}?${NC} Proje klasoru [$DEFAULT_PROJECT_DIR]: ")" input
+  read -r -p "$(echo -e "${YELLOW}?${NC} Proje klasörü [$DEFAULT_PROJECT_DIR]: ")" input
 
   if [ -z "$input" ]; then
     PROJECT_DIR="$DEFAULT_PROJECT_DIR"
@@ -56,14 +56,14 @@ ask_project_dir() {
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "$1 komutu bulunamadi"
+  command -v "$1" >/dev/null 2>&1 || fail "$1 komutu bulunamadı"
 }
 
 print_header() {
   echo -e "${CYAN}"
   echo "=================================================="
-  echo " Supabase Reset Yardimcisi"
-  echo " Local proje ve Docker temizlik araci"
+  echo " Supabase Sıfırlama Yardımcısı"
+  echo " Local proje ve Docker temizlik aracı"
   echo "=================================================="
   echo -e "${NC}"
 }
@@ -72,24 +72,24 @@ show_menu() {
   echo ""
   echo "Ne yapmak istiyorsun?"
   echo ""
-  echo "  1) Sadece Supabase local DB sifirla"
-  echo "     - Proje klasoru kalir"
-  echo "     - supabase db reset calisir"
-  echo "     - Local DB verileri silinir"
-  echo "     - Migration ve seed dosyalari tekrar calisir"
+  echo "  1) Sadece Supabase local veritabanını sıfırla"
+  echo "     - Proje klasörü kalır"
+  echo "     - supabase db reset çalışır"
+  echo "     - Local veritabanı verileri silinir"
+  echo "     - Migration ve seed dosyaları tekrar çalışır"
   echo ""
-  echo "  2) Supabase projesini durdur ve proje klasorunu sil"
-  echo "     - supabase stop --no-backup calisir"
-  echo "     - Hedef proje klasoru silinir"
-  echo "     - Docker genel temizligi yapilmaz"
+  echo "  2) Supabase projesini durdur ve proje klasörünü sil"
+  echo "     - supabase stop --no-backup çalışır"
+  echo "     - Hedef proje klasörü silinir"
+  echo "     - Docker genel temizliği yapılmaz"
   echo ""
-  echo "  3) Tam Docker temizligi ve proje klasorunu sil"
-  echo "     - supabase stop --no-backup calisir"
-  echo "     - Hedef proje klasoru silinir"
-  echo "     - docker system prune -a --volumes calisir"
-  echo "     - Kullanilmayan Docker image, container, network ve volume verileri silinir"
+  echo "  3) Tam Docker temizliği yap ve proje klasörünü sil"
+  echo "     - supabase stop --no-backup çalışır"
+  echo "     - Hedef proje klasörü silinir"
+  echo "     - docker system prune -a --volumes çalışır"
+  echo "     - Kullanılmayan Docker image, container, network ve volume verileri silinir"
   echo ""
-  echo "  4) Cikis"
+  echo "  4) Çıkış"
   echo ""
 }
 
@@ -99,12 +99,12 @@ stop_supabase_if_possible() {
 
     if [ -d "supabase" ]; then
       step "Supabase durduruluyor"
-      supabase stop --no-backup || warn "Supabase durdurulamadi veya zaten calismiyordu"
+      supabase stop --no-backup || warn "Supabase durdurulamadı veya zaten çalışmıyordu"
     else
-      warn "$PROJECT_DIR icinde supabase/ klasoru bulunamadi"
+      warn "$PROJECT_DIR içinde supabase/ klasörü bulunamadı"
     fi
   else
-    warn "Proje klasoru bulunamadi: $PROJECT_DIR"
+    warn "Proje klasörü bulunamadı: $PROJECT_DIR"
   fi
 }
 
@@ -112,86 +112,86 @@ reset_local_db() {
   require_command supabase
 
   if [ ! -d "$PROJECT_DIR" ]; then
-    fail "Proje klasoru bulunamadi: $PROJECT_DIR"
+    fail "Proje klasörü bulunamadı: $PROJECT_DIR"
   fi
 
   cd "$PROJECT_DIR"
 
   if [ ! -d "supabase" ]; then
-    fail "Bu klasorde supabase/ klasoru bulunamadi: $PROJECT_DIR"
+    fail "Bu klasörde supabase/ klasörü bulunamadı: $PROJECT_DIR"
   fi
 
-  warn "Bu islem local Supabase veritabanini sifirlar."
-  warn "Local DB verileri silinir."
-  warn "Migration dosyalari bastan calisir ve config.toml icindeki seed dosyalari tekrar yuklenir."
+  warn "Bu işlem local Supabase veritabanını sıfırlar."
+  warn "Local veritabanı verileri silinir."
+  warn "Migration dosyaları baştan çalışır ve config.toml içindeki seed dosyaları tekrar yüklenir."
 
-  if ! ask_yes_no "Local DB sifirlama islemine devam edilsin mi?" "N"; then
-    warn "Islem iptal edildi."
+  if ! ask_yes_no "Local veritabanını sıfırlamaya devam edilsin mi?" "N"; then
+    warn "İşlem iptal edildi."
     exit 0
   fi
 
-  step "supabase db reset calistiriliyor"
+  step "supabase db reset çalıştırılıyor"
   supabase db reset
-  ok "Local Supabase DB sifirlama tamamlandi"
+  ok "Local Supabase veritabanı sıfırlandı"
 }
 
 remove_project_dir() {
   if [ ! -d "$PROJECT_DIR" ]; then
-    warn "Proje klasoru zaten yok: $PROJECT_DIR"
+    warn "Proje klasörü zaten yok: $PROJECT_DIR"
     return
   fi
 
-  warn "Bu islem proje klasorunu silecek:"
+  warn "Bu işlem proje klasörünü silecek:"
   echo "  $PROJECT_DIR"
 
-  if ! ask_yes_no "Bu klasor silinsin mi?" "N"; then
-    warn "Klasor silme islemi iptal edildi."
+  if ! ask_yes_no "Bu klasör silinsin mi?" "N"; then
+    warn "Klasör silme işlemi iptal edildi."
     return
   fi
 
   if [ "$PROJECT_DIR" = "/" ] || [ "$PROJECT_DIR" = "$HOME" ]; then
-    fail "Guvenli olmayan klasor silinemez: $PROJECT_DIR"
+    fail "Güvenli olmayan klasör silinemez: $PROJECT_DIR"
   fi
 
-  step "Proje klasoru siliniyor"
+  step "Proje klasörü siliniyor"
 
   cd /tmp
 
   if rm -rf "$PROJECT_DIR" 2>/dev/null; then
-    ok "Proje klasoru silindi: $PROJECT_DIR"
+    ok "Proje klasörü silindi: $PROJECT_DIR"
   else
-    warn "Normal silme basarisiz oldu. sudo ile tekrar deneniyor."
+    warn "Normal silme başarısız oldu. sudo ile tekrar deneniyor."
     sudo rm -rf "$PROJECT_DIR"
-    ok "Proje klasoru sudo ile silindi: $PROJECT_DIR"
+    ok "Proje klasörü sudo ile silindi: $PROJECT_DIR"
   fi
 }
 
 docker_full_cleanup() {
   require_command docker
 
-  warn "Bu islem kullanilmayan Docker container, network, image ve volume verilerini siler."
-  warn "Docker volume icinde veritabani verileri olabilir."
-  warn "Bu islem yikicidir."
+  warn "Bu işlem kullanılmayan Docker container, network, image ve volume verilerini siler."
+  warn "Docker volume içinde veritabanı verileri olabilir."
+  warn "Bu işlem yıkıcıdır."
 
-  if ! ask_yes_no "docker system prune -a --volumes calistirilsin mi?" "N"; then
-    warn "Docker temizligi iptal edildi."
+  if ! ask_yes_no "docker system prune -a --volumes çalıştırılsın mı?" "N"; then
+    warn "Docker temizliği iptal edildi."
     return
   fi
 
-  step "Docker tam temizlik calistiriliyor"
+  step "Docker tam temizliği çalıştırılıyor"
   docker system prune -a --volumes -f
-  ok "Docker temizligi tamamlandi"
+  ok "Docker temizliği tamamlandı"
 }
 
 print_header
 ask_project_dir
 
 step "Hedef"
-echo "Proje klasoru: $PROJECT_DIR"
+echo "Proje klasörü: $PROJECT_DIR"
 
 show_menu
 
-read -r -p "$(echo -e "${YELLOW}?${NC} Secenek sec [1-4]: ")" CHOICE
+read -r -p "$(echo -e "${YELLOW}?${NC} Seçenek seç [1-4]: ")" CHOICE
 
 case "$CHOICE" in
   1)
@@ -210,13 +210,13 @@ case "$CHOICE" in
     docker_full_cleanup
     ;;
   4)
-    warn "Islem iptal edildi."
+    warn "İşlem iptal edildi."
     exit 0
     ;;
   *)
-    fail "Gecersiz secenek: $CHOICE"
+    fail "Geçersiz seçenek: $CHOICE"
     ;;
 esac
 
-step "Tamamlandi"
-ok "Reset yardimcisi tamamlandi"
+step "Tamamlandı"
+ok "Sıfırlama yardımcısı tamamlandı"
