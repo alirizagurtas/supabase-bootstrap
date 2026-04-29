@@ -91,7 +91,7 @@ chmod +x install_supabase.sh
 ### Tek komutla kurulum
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh)
+bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh?$(date +%s)")
 ```
 
 > Not: Script interaktif çalışır. Devam etmek isteyip istemediğini sorar.
