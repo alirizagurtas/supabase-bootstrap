@@ -148,8 +148,14 @@ remove_project_dir() {
   fi
 
   step "Removing project directory"
-  rm -rf "$PROJECT_DIR"
-  ok "Project directory removed: $PROJECT_DIR"
+  
+  if rm -rf "$PROJECT_DIR" 2>/dev/null; then
+    ok "Project directory removed: $PROJECT_DIR"
+  else
+    warn "Normal delete failed. Retrying with sudo."
+    sudo rm -rf "$PROJECT_DIR"
+    ok "Project directory removed with sudo: $PROJECT_DIR"
+  fi
 }
 
 docker_full_cleanup() {
