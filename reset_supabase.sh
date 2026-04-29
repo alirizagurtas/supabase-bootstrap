@@ -83,9 +83,10 @@ show_menu() {
   echo "     - Hedef proje klasörü silinir"
   echo "     - Docker genel temizliği yapılmaz"
   echo ""
-  echo "  3) Tam Docker temizliği yap ve proje klasörünü sil"
+  echo "  3) Tam Supabase/Docker temizliği yap"
   echo "     - supabase stop --no-backup çalışır"
   echo "     - Hedef proje klasörü silinir"
+  echo "     - İstenirse ~/.supabase klasörü silinir"
   echo "     - docker system prune -a --volumes çalışır"
   echo "     - Kullanılmayan Docker image, container, network ve volume verileri silinir"
   echo ""
@@ -166,6 +167,33 @@ remove_project_dir() {
   fi
 }
 
+remove_supabase_home() {
+  local supabase_home="$HOME/.supabase"
+
+  if [ ! -d "$supabase_home" ]; then
+    warn "Supabase CLI klasörü zaten yok: $supabase_home"
+    return
+  fi
+
+  warn "Bu işlem Supabase CLI kullanıcı klasörünü silecek:"
+  echo "  $supabase_home"
+
+  if ! ask_yes_no "Supabase CLI klasörü silinsin mi?" "N"; then
+    warn "Supabase CLI klasörü silme işlemi iptal edildi."
+    return
+  fi
+
+  step "Supabase CLI klasörü siliniyor"
+
+  if rm -rf "$supabase_home" 2>/dev/null; then
+    ok "Supabase CLI klasörü silindi: $supabase_home"
+  else
+    warn "Normal silme başarısız oldu. sudo ile tekrar deneniyor."
+    sudo rm -rf "$supabase_home"
+    ok "Supabase CLI klasörü sudo ile silindi: $supabase_home"
+  fi
+}
+
 docker_full_cleanup() {
   require_command docker
 
@@ -207,6 +235,7 @@ case "$CHOICE" in
     require_command docker
     stop_supabase_if_possible
     remove_project_dir
+    remove_supabase_home
     docker_full_cleanup
     ;;
   4)
