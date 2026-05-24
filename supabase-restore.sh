@@ -1,0 +1,848 @@
+#!/usr/bin/env bash
+#
+# supabase-restore.sh — Self-hosted Supabase için interaktif geri yükleme.
+#
+# Yedek yapısı (supabase-backup.sh v3.0):
+#   database/full-cluster.dump.zst   — pg_dump --format=custom (HER ŞEY)
+#   database/{roles,schema,data}.sql.zst
+#   volumes/db.tar.zst               — supabase_db_<proj> volume snapshot
+#   volumes/storage.tar.zst          — supabase_storage_<proj> volume
+#   volumes/edge_runtime.tar.zst     — supabase_edge_runtime_<proj> volume
+#   functions/functions.tar.zst      — supabase/functions dizini
+#   config/{config.toml,env.txt}
+#   manifest.json                    — sha256 + meta
+#
+# 3 strateji:
+#   volume → en hızlı/sadık. Volume'ları drop edip arşivden açar.
+#   sql    → full-cluster.dump'ı pg_restore ile yükler. Versiyon-tolerant.
+#   hybrid → volume restore + SQL ile schema/satır doğrulaması.
+#
+# Kullanım:
+#   supabase-restore                          interaktif (yedek + strateji + scope sorulur)
+#   supabase-restore <yedek-id>               belirli yedek (interaktif)
+#   supabase-restore --latest                 en son yedek
+#   supabase-restore --list                   yedekleri listele
+#   supabase-restore --strategy volume|sql|hybrid
+#   supabase-restore --components db,storage,edge,functions,config
+#   supabase-restore --all                    tüm bileşenler (CI için)
+#   supabase-restore -y, --yes                tüm onaylara EVET
+#   supabase-restore --no-backup              pre-restore yedek atla (riskli)
+#   supabase-restore --dry-run                planı göster, hiçbir şey yapma
+#   supabase-restore --verify <id>            sadece manifest sha256 doğrula
+#   supabase-restore --workdir <yol>          proje dizinini elle belirt
+#   supabase-restore --output <dir>           yedek dizinini özelleştir
+#   supabase-restore --help
+#
+# Bağımlılık: supabase-backup.sh (pre-restore yedek için)
+
+set -euo pipefail
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  RENKLER & UI                                                      ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+if [[ -t 1 ]]; then
+  R=$'\033[0m'; B=$'\033[1m'; D=$'\033[2m'
+  RED=$'\033[38;5;203m'; GRN=$'\033[38;5;120m'; YEL=$'\033[38;5;221m'
+  BLU=$'\033[38;5;111m'; MAG=$'\033[38;5;177m'; CYN=$'\033[38;5;87m'
+  GRY=$'\033[38;5;245m'
+  BG_BLU=$'\033[48;5;24m\033[38;5;255m'
+  BG_GRN=$'\033[48;5;22m\033[38;5;255m'
+  BG_RED=$'\033[48;5;52m\033[38;5;255m'
+  BG_YEL=$'\033[48;5;94m\033[38;5;255m'
+else
+  R=""; B=""; D=""; RED=""; GRN=""; YEL=""; BLU=""; MAG=""; CYN=""; GRY=""
+  BG_BLU=""; BG_GRN=""; BG_RED=""; BG_YEL=""
+fi
+
+info()    { echo "${BLU}│${R} $*"; }
+ok()      { echo "${GRN}✓${R} $*"; }
+warn()    { echo "${YEL}⚠${R} $*"; }
+err()     { echo "${RED}✗${R} $*" >&2; }
+detail()  { echo "  ${D}$*${R}"; }
+step()    { echo; echo "${MAG}▌${R} ${B}$*${R}"; echo "${MAG}└──────────────────${R}"; }
+banner()  { echo; echo "${BG_BLU}  $1  ${R}"; }
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  ARGÜMANLAR                                                        ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+MODE="restore"
+BACKUP_ID=""
+LATEST=false
+STRATEGY=""           # boş = soru sor
+COMPONENTS=""         # boş = interaktif menü
+ALL_COMPONENTS=false
+ASSUME_YES=false
+DO_PRE_BACKUP=true
+DRY_RUN=false
+VERIFY_PATH=""
+WORKDIR_OVERRIDE=""
+OUTPUT_DIR="${HOME}/supabase-backups"
+
+usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list)         MODE="list"; shift ;;
+    --verify)       MODE="verify"; VERIFY_PATH="${2:-}"; shift 2 ;;
+    --latest)       LATEST=true; shift ;;
+    --strategy)     STRATEGY="$2"; shift 2 ;;
+    --components)   COMPONENTS="$2"; shift 2 ;;
+    --all)          ALL_COMPONENTS=true; shift ;;
+    -y|--yes)       ASSUME_YES=true; shift ;;
+    --no-backup)    DO_PRE_BACKUP=false; shift ;;
+    --dry-run)      DRY_RUN=true; shift ;;
+    --workdir)      WORKDIR_OVERRIDE="$2"; shift 2 ;;
+    --output)       OUTPUT_DIR="$2"; shift 2 ;;
+    -h|--help)      usage ;;
+    -*) err "Bilinmeyen flag: $1"; echo "Yardım: $0 --help"; exit 1 ;;
+    *)  [[ -z "$BACKUP_ID" ]] && BACKUP_ID="$1" || { err "Çoklu yedek-id verilemez: $1"; exit 1; }
+        shift ;;
+  esac
+done
+
+# Strateji validasyonu
+if [[ -n "$STRATEGY" ]] && [[ ! "$STRATEGY" =~ ^(volume|sql|hybrid)$ ]]; then
+  err "Geçersiz --strategy: $STRATEGY (volume|sql|hybrid)"
+  exit 1
+fi
+
+confirm() {
+  if $ASSUME_YES; then return 0; fi
+  local prompt="$1" default="${2:-n}" hint
+  [[ "$default" == "y" ]] && hint="[E/h]" || hint="[e/H]"
+  read -rp "${YEL}?${R} $prompt $hint " ans
+  if [[ -z "$ans" ]]; then
+    [[ "$default" == "y" ]]
+  else
+    [[ "$ans" =~ ^([eE]|[yY])$ ]]
+  fi
+}
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  YARDIMCI                                                          ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+detect_workdir() {
+  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
+    [[ -f "${WORKDIR_OVERRIDE}/supabase/config.toml" ]] && echo "$WORKDIR_OVERRIDE" && return 0
+    return 1
+  fi
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    [[ -f "${dir}/supabase/config.toml" ]] && echo "$dir" && return 0
+    dir=$(dirname "$dir")
+  done
+  for candidate in "$HOME" "$HOME"/*/; do
+    candidate="${candidate%/}"
+    [[ -f "${candidate}/supabase/config.toml" ]] && echo "$candidate" && return 0
+  done
+  return 1
+}
+
+human_size() {
+  local bytes=${1:-0}
+  if (( bytes < 1024 )); then echo "${bytes} B"
+  elif (( bytes < 1048576 )); then printf "%.1f KB" "$(echo "$bytes/1024" | bc -l)"
+  elif (( bytes < 1073741824 )); then printf "%.1f MB" "$(echo "$bytes/1048576" | bc -l)"
+  else printf "%.2f GB" "$(echo "$bytes/1073741824" | bc -l)"
+  fi
+}
+
+file_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
+file_hash() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+
+check_requirements() {
+  local missing=()
+  for cmd in docker zstd tar bc jq; do
+    command -v "$cmd" >/dev/null || missing+=("$cmd")
+  done
+  if (( ${#missing[@]} > 0 )); then
+    err "Eksik komutlar: ${missing[*]}"
+    err "Kurulum: sudo apt install ${missing[*]}"
+    exit 1
+  fi
+  command -v supabase >/dev/null || { err "supabase CLI bulunamadı"; exit 1; }
+}
+
+# Yedek dizinini bul: id verilmişse onu, yoksa --latest veya interaktif seç
+resolve_backup_path() {
+  local id="$1"
+
+  if [[ -n "$id" ]]; then
+    if [[ -d "$id" ]]; then
+      echo "$id"
+      return 0
+    fi
+    if [[ -d "${OUTPUT_DIR}/${id}" ]]; then
+      echo "${OUTPUT_DIR}/${id}"
+      return 0
+    fi
+    err "Yedek bulunamadı: $id"
+    return 1
+  fi
+
+  if $LATEST; then
+    local latest
+    latest=$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -name '20*' 2>/dev/null \
+             | sort | tail -1)
+    [[ -z "$latest" ]] && { err "Hiç yedek yok"; return 1; }
+    echo "$latest"
+    return 0
+  fi
+
+  # İnteraktif seç
+  if $ASSUME_YES; then
+    err "Yedek-id verilmedi ve -y modunda interaktif seçim yapılamıyor"
+    return 1
+  fi
+
+  shopt -s nullglob
+  local backups=()
+  while IFS= read -r d; do
+    [[ -f "${d}/manifest.json" ]] && backups+=("$d")
+  done < <(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -name '20*' 2>/dev/null | sort)
+  shopt -u nullglob
+
+  if (( ${#backups[@]} == 0 )); then
+    err "Hiç yedek yok (${OUTPUT_DIR})"
+    return 1
+  fi
+
+  echo "" >&2
+  echo "${B}Mevcut yedekler:${R}" >&2
+  local i=1
+  for b in "${backups[@]}"; do
+    local size cli pg
+    size=$(du -sb "$b" 2>/dev/null | awk '{print $1}')
+    cli=$(jq -r '.supabase_cli // "?"' "${b}/manifest.json" 2>/dev/null)
+    pg=$(jq -r '.postgres_version // "?"' "${b}/manifest.json" 2>/dev/null)
+    printf "  ${B}%2d)${R} %-22s  ${D}%10s  CLI:%s  PG:%s${R}\n" \
+      "$i" "$(basename "$b")" "$(human_size $size)" "$cli" "$pg" >&2
+    i=$((i+1))
+  done
+  echo "" >&2
+
+  local sel
+  read -rp "${YEL}?${R} Hangi yedek? [1-${#backups[@]}, q=iptal] " sel
+  [[ "$sel" =~ ^[qQ]$ ]] && { err "İptal"; return 1; }
+  [[ ! "$sel" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#backups[@]} )) && \
+    { err "Geçersiz seçim"; return 1; }
+  echo "${backups[$((sel-1))]}"
+}
+
+# manifest.json'daki sha256'ları dosyalara karşı doğrula
+verify_manifest_hashes() {
+  local target="$1"
+  local manifest="${target}/manifest.json"
+  [[ ! -f "$manifest" ]] && { err "manifest.json yok"; return 1; }
+
+  local errors=0
+  local keys
+  keys=$(jq -r '.files | keys[]' "$manifest" 2>/dev/null) || { err "manifest JSON parse hatası"; return 1; }
+
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    local f="${target}/${key}"
+    if [[ ! -f "$f" ]]; then
+      err "  $key — dosya yok"
+      errors=$((errors+1))
+      continue
+    fi
+    local expected actual
+    expected=$(jq -r ".files[\"${key}\"].sha256" "$manifest")
+    actual=$(file_hash "$f")
+    if [[ "$expected" != "$actual" ]]; then
+      err "  $key — sha256 UYUŞMUYOR"
+      detail "    beklenen: $expected"
+      detail "    bulunan:  $actual"
+      errors=$((errors+1))
+    else
+      ok "  $key ${D}($(human_size $(file_size "$f")))${R}"
+    fi
+  done <<< "$keys"
+
+  return $errors
+}
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  --list                                                            ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+cmd_list() {
+  banner "Restore — Mevcut Yedekler"
+  info "Dizin: ${B}${OUTPUT_DIR}${R}"
+  [[ ! -d "$OUTPUT_DIR" ]] && { info "Yedek dizini yok"; return; }
+
+  shopt -s nullglob
+  local backups=("${OUTPUT_DIR}"/*/)
+  shopt -u nullglob
+  (( ${#backups[@]} == 0 )) && { info "Yedek yok"; return; }
+
+  echo
+  printf "  ${B}%-22s %10s  %-8s  %-6s  %s${R}\n" "TARİH" "BOYUT" "CLI" "PG" "BİLEŞENLER"
+  printf "  ${GRY}%s${R}\n" "──────────────────────────────────────────────────────────────────────"
+
+  for b in "${backups[@]}"; do
+    local name size cli pg comps=""
+    name=$(basename "$b")
+    size=$(du -sb "$b" 2>/dev/null | awk '{print $1}')
+    cli=$(jq -r '.supabase_cli // "?"' "${b}manifest.json" 2>/dev/null || echo "?")
+    pg=$(jq -r '.postgres_version // "?"' "${b}manifest.json" 2>/dev/null || echo "?")
+    [[ -f "${b}volumes/db.tar.zst" ]] && comps+="${CYN}db-vol${R} "
+    [[ -f "${b}volumes/storage.tar.zst" ]] && comps+="${CYN}storage${R} "
+    [[ -f "${b}volumes/edge_runtime.tar.zst" ]] && comps+="${CYN}edge${R} "
+    [[ -f "${b}database/full-cluster.dump.zst" ]] && comps+="${CYN}sql${R} "
+    [[ -f "${b}functions/functions.tar.zst" ]] && comps+="${CYN}fn${R} "
+    [[ -f "${b}config/config.toml" ]] && comps+="${CYN}cfg${R} "
+    printf "  %-22s %10s  %-8s  %-6s  %s\n" "$name" "$(human_size $size)" "$cli" "$pg" "$comps"
+  done
+}
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  --verify                                                          ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+cmd_verify() {
+  local target
+  target=$(resolve_backup_path "$VERIFY_PATH") || exit 1
+
+  banner "Manifest Doğrulama"
+  info "Hedef: ${B}$(basename "$target")${R}"
+  echo
+  if verify_manifest_hashes "$target"; then
+    echo
+    ok "${B}Tüm hash'ler doğrulandı${R}"
+  else
+    echo
+    err "Bütünlük hatası — yedek güvenilmez!"
+    exit 1
+  fi
+}
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  İNTERAKTİF MENÜLER                                                ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+# Strateji seç (yoksa)
+pick_strategy() {
+  [[ -n "$STRATEGY" ]] && return
+  if $ASSUME_YES; then
+    STRATEGY="volume"  # -y default
+    return
+  fi
+
+  echo
+  echo "${B}Restore stratejisi:${R}"
+  echo "  ${B}1)${R} ${CYN}volume${R}  — Volume'ları arşivden geri yükle (en hızlı, en sadık)"
+  echo "  ${B}2)${R} ${CYN}sql${R}     — full-cluster.dump'ı pg_restore ile yükle (versiyon-tolerant)"
+  echo "  ${B}3)${R} ${CYN}hybrid${R}  — volume restore + SQL ile doğrulama"
+  echo
+  local sel
+  read -rp "${YEL}?${R} Seçim [1-3, varsayılan 1]: " sel
+  case "${sel:-1}" in
+    1) STRATEGY="volume" ;;
+    2) STRATEGY="sql" ;;
+    3) STRATEGY="hybrid" ;;
+    *) err "Geçersiz"; exit 1 ;;
+  esac
+}
+
+# Hangi bileşenler mevcut? (yedeğe göre)
+declare -a AVAILABLE_COMPONENTS=()
+declare -A COMP_SELECTED=()
+
+discover_components() {
+  local target="$1"
+  AVAILABLE_COMPONENTS=()
+  [[ -f "${target}/volumes/db.tar.zst" ]] && AVAILABLE_COMPONENTS+=("db")
+  [[ -f "${target}/database/full-cluster.dump.zst" ]] && AVAILABLE_COMPONENTS+=("sql")
+  [[ -f "${target}/volumes/storage.tar.zst" ]] && AVAILABLE_COMPONENTS+=("storage")
+  [[ -f "${target}/volumes/edge_runtime.tar.zst" ]] && AVAILABLE_COMPONENTS+=("edge")
+  [[ -f "${target}/functions/functions.tar.zst" ]] && AVAILABLE_COMPONENTS+=("functions")
+  [[ -f "${target}/config/config.toml" ]] && AVAILABLE_COMPONENTS+=("config")
+}
+
+# Stratejiye + flag'lere göre default seçimleri belirle
+init_default_selection() {
+  for c in "${AVAILABLE_COMPONENTS[@]}"; do COMP_SELECTED["$c"]=false; done
+
+  # SQL stratejisinde db değil sql kullanılır
+  case "$STRATEGY" in
+    volume) [[ -n "${COMP_SELECTED[db]+x}" ]] && COMP_SELECTED["db"]=true ;;
+    sql)    [[ -n "${COMP_SELECTED[sql]+x}" ]] && COMP_SELECTED["sql"]=true ;;
+    hybrid)
+      [[ -n "${COMP_SELECTED[db]+x}" ]] && COMP_SELECTED["db"]=true
+      [[ -n "${COMP_SELECTED[sql]+x}" ]] && COMP_SELECTED["sql"]=true
+      ;;
+  esac
+  [[ -n "${COMP_SELECTED[storage]+x}" ]] && COMP_SELECTED["storage"]=true
+  [[ -n "${COMP_SELECTED[edge]+x}" ]] && COMP_SELECTED["edge"]=true
+  [[ -n "${COMP_SELECTED[functions]+x}" ]] && COMP_SELECTED["functions"]=true
+  # Config riskli (çalışan yapılandırmayı bozabilir) — default OFF
+  [[ -n "${COMP_SELECTED[config]+x}" ]] && COMP_SELECTED["config"]=false
+}
+
+# --components flag varsa onu uygula
+apply_components_flag() {
+  if $ALL_COMPONENTS; then
+    for c in "${!COMP_SELECTED[@]}"; do COMP_SELECTED["$c"]=true; done
+    return
+  fi
+  [[ -z "$COMPONENTS" ]] && return
+  for c in "${!COMP_SELECTED[@]}"; do COMP_SELECTED["$c"]=false; done
+  local IFS=','
+  for c in $COMPONENTS; do
+    c=$(echo "$c" | xargs)
+    if [[ -z "${COMP_SELECTED[$c]+x}" ]]; then
+      err "Bileşen yok veya yedekte mevcut değil: $c"
+      err "Mevcut: ${AVAILABLE_COMPONENTS[*]}"
+      exit 1
+    fi
+    COMP_SELECTED["$c"]=true
+  done
+}
+
+component_label() {
+  case "$1" in
+    db)        echo "DB volume (supabase_db_*)" ;;
+    sql)       echo "SQL dump (full-cluster.dump.zst)" ;;
+    storage)   echo "Storage volume (dosyalar)" ;;
+    edge)      echo "Edge runtime volume" ;;
+    functions) echo "Edge Functions kaynak kodu" ;;
+    config)    echo "config.toml ${YEL}(üzerine yazılır)${R}" ;;
+    *)         echo "$1" ;;
+  esac
+}
+
+# İnteraktif checkbox menüsü: numara girip toggle
+interactive_components_menu() {
+  $ASSUME_YES && return  # -y → default'ları kullan
+  [[ -n "$COMPONENTS" ]] || $ALL_COMPONENTS && return
+
+  while true; do
+    echo
+    echo "${B}Restore edilecek bileşenler:${R} ${D}(toggle için numara, bitince ENTER)${R}"
+    local i=1
+    local -a idx_to_comp=()
+    for c in "${AVAILABLE_COMPONENTS[@]}"; do
+      idx_to_comp+=("$c")
+      local mark
+      if [[ "${COMP_SELECTED[$c]}" == "true" ]]; then
+        mark="${GRN}[x]${R}"
+      else
+        mark="${GRY}[ ]${R}"
+      fi
+      printf "  %s ${B}%d)${R} ${CYN}%-10s${R} %s\n" "$mark" "$i" "$c" "$(component_label "$c")"
+      i=$((i+1))
+    done
+    echo
+    local sel
+    read -rp "${YEL}?${R} Toggle (1-${#AVAILABLE_COMPONENTS[@]}, 'a'=hepsi, 'n'=hiçbiri, ENTER=onayla): " sel
+
+    if [[ -z "$sel" ]]; then
+      # En az 1 seçili olmalı
+      local any=false
+      for c in "${AVAILABLE_COMPONENTS[@]}"; do
+        [[ "${COMP_SELECTED[$c]}" == "true" ]] && any=true && break
+      done
+      if ! $any; then
+        warn "En az bir bileşen seçmelisiniz"
+        continue
+      fi
+      break
+    elif [[ "$sel" == "a" ]] || [[ "$sel" == "A" ]]; then
+      for c in "${AVAILABLE_COMPONENTS[@]}"; do COMP_SELECTED["$c"]=true; done
+    elif [[ "$sel" == "n" ]] || [[ "$sel" == "N" ]]; then
+      for c in "${AVAILABLE_COMPONENTS[@]}"; do COMP_SELECTED["$c"]=false; done
+    elif [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#idx_to_comp[@]} )); then
+      local c="${idx_to_comp[$((sel-1))]}"
+      if [[ "${COMP_SELECTED[$c]}" == "true" ]]; then
+        COMP_SELECTED["$c"]=false
+      else
+        COMP_SELECTED["$c"]=true
+      fi
+    else
+      warn "Geçersiz: $sel"
+    fi
+  done
+}
+
+selected_list() {
+  local out=""
+  for c in "${AVAILABLE_COMPONENTS[@]}"; do
+    [[ "${COMP_SELECTED[$c]}" == "true" ]] && out+="$c "
+  done
+  echo "$out" | xargs
+}
+
+is_selected() { [[ "${COMP_SELECTED[$1]:-false}" == "true" ]]; }
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  RESTORE PRIMITİVES                                                ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+# Tek bir Docker volume'unu tar.zst arşivinden geri yükle.
+# Volume varsa silinir, yeniden oluşturulur, içerik açılır.
+restore_volume() {
+  local vol_name="$1"
+  local archive="$2"
+
+  info "  ${B}${vol_name}${R} ← ${D}$(basename "$archive")${R}"
+
+  # Volume zaten var mı?
+  if docker volume inspect "$vol_name" >/dev/null 2>&1; then
+    docker volume rm "$vol_name" >/dev/null 2>&1 \
+      || { err "    Volume silinemedi (in-use?): $vol_name"; return 1; }
+  fi
+  docker volume create "$vol_name" >/dev/null
+
+  # Arşivi volume'a aç (alpine geçici container)
+  if ! docker run --rm \
+        -v "${vol_name}:/dest" \
+        -v "${archive}:/backup.tar.zst:ro" \
+        alpine:latest sh -c "cd /dest && apk add --no-cache zstd >/dev/null 2>&1 && zstd -dc /backup.tar.zst | tar -xf -" 2>/dev/null; then
+    err "    Arşiv açma başarısız"
+    return 1
+  fi
+
+  local n
+  n=$(docker run --rm -v "${vol_name}:/d:ro" alpine:latest \
+        sh -c "find /d -type f 2>/dev/null | wc -l" 2>/dev/null | xargs)
+  ok "    ${vol_name} restore edildi ${D}(${n:-?} dosya)${R}"
+}
+
+# Config restore: supabase/config.toml üzerine yaz
+restore_config() {
+  local target="$1" workdir="$2"
+  local src="${target}/config/config.toml"
+  local dst="${workdir}/supabase/config.toml"
+
+  if [[ -f "$dst" ]]; then
+    cp "$dst" "${dst}.pre-restore-$(date +%s).bak"
+    ok "  Mevcut config yedeklendi: ${D}${dst}.pre-restore-*.bak${R}"
+  fi
+  cp "$src" "$dst"
+  ok "  config.toml restore edildi"
+}
+
+# Functions restore: supabase/functions dizinine extract
+restore_functions() {
+  local target="$1" workdir="$2"
+  local archive="${target}/functions/functions.tar.zst"
+
+  # Mevcut functions'ı yedekle
+  if [[ -d "${workdir}/supabase/functions" ]]; then
+    local bak="${workdir}/supabase/functions.pre-restore-$(date +%s)"
+    mv "${workdir}/supabase/functions" "$bak"
+    ok "  Mevcut functions yedeklendi: ${D}${bak}${R}"
+  fi
+
+  zstd -dc "$archive" 2>/dev/null | tar -xf - -C "${workdir}/supabase"
+  local n
+  n=$(find "${workdir}/supabase/functions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+  ok "  functions extract edildi ${D}(${n} function)${R}"
+}
+
+# SQL restore: full-cluster.dump.zst → pg_restore
+restore_sql() {
+  local target="$1" db_container="$2"
+  local dump="${target}/database/full-cluster.dump.zst"
+
+  info "  Mevcut postgres DB drop ediliyor..."
+  docker exec "$db_container" psql -U postgres -d template1 -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='postgres' AND pid<>pg_backend_pid();" >/dev/null 2>&1 || true
+
+  info "  pg_restore --clean --if-exists başlıyor..."
+  if zstd -dc "$dump" 2>/dev/null | docker exec -i "$db_container" \
+       pg_restore -U postgres -d postgres \
+       --clean --if-exists --no-owner --no-privileges --single-transaction 2>&1 \
+       | tail -20; then
+    ok "  SQL dump restore edildi"
+  else
+    err "  pg_restore başarısız (yukarıdaki çıktıyı inceleyin)"
+    return 1
+  fi
+}
+
+# Hibritte: volume restore sonrası schema/satır karşılaştırması
+verify_hybrid() {
+  local target="$1" db_container="$2"
+  info "  Yedek manifest istatistikleri vs canlı DB..."
+  local mfst="${target}/manifest.json"
+  local expected_tables expected_users
+  expected_tables=$(jq -r '.stats.public_tables // 0' "$mfst")
+  expected_users=$(jq -r '.stats.auth_users // 0' "$mfst")
+
+  local actual_tables actual_users
+  actual_tables=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null | xargs)
+  actual_users=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT count(*) FROM auth.users;" 2>/dev/null | xargs)
+
+  if [[ "$expected_tables" == "$actual_tables" ]]; then
+    ok "  public tablo: ${expected_tables} ${D}(eşleşti)${R}"
+  else
+    warn "  public tablo: yedek=${expected_tables} canlı=${actual_tables} ${RED}FARK${R}"
+  fi
+  if [[ "$expected_users" == "$actual_users" ]]; then
+    ok "  auth.users: ${expected_users} ${D}(eşleşti)${R}"
+  else
+    warn "  auth.users: yedek=${expected_users} canlı=${actual_users} ${RED}FARK${R}"
+  fi
+}
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  cmd_restore                                                       ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+cmd_restore() {
+  banner "Supabase Restore"
+  detail "$(date '+%Y-%m-%d %H:%M:%S')"
+
+  step "Ön kontroller"
+  check_requirements
+  ok "Bağımlılıklar tamam"
+
+  local WORKDIR
+  WORKDIR=$(detect_workdir) || { err "Supabase projesi bulunamadı"; exit 1; }
+  local PROJECT_ID="${WORKDIR##*/}"
+  local DB_CONTAINER="supabase_db_${PROJECT_ID}"
+  info "Proje: ${B}${PROJECT_ID}${R} ${D}(${WORKDIR})${R}"
+
+  # Yedek bul
+  local BACKUP_PATH
+  BACKUP_PATH=$(resolve_backup_path "$BACKUP_ID") || exit 1
+  info "Yedek: ${B}$(basename "$BACKUP_PATH")${R}"
+
+  # Manifest oku
+  local mfst="${BACKUP_PATH}/manifest.json"
+  [[ ! -f "$mfst" ]] && { err "manifest.json yok"; exit 1; }
+
+  local BACKUP_CLI BACKUP_PG BACKUP_PROJECT
+  BACKUP_CLI=$(jq -r '.supabase_cli // "?"' "$mfst")
+  BACKUP_PG=$(jq -r '.postgres_version // "?"' "$mfst")
+  BACKUP_PROJECT=$(jq -r '.project_id // "?"' "$mfst")
+  detail "Yedek CLI: $BACKUP_CLI  PG: $BACKUP_PG  Proje: $BACKUP_PROJECT"
+
+  if [[ "$BACKUP_PROJECT" != "$PROJECT_ID" ]]; then
+    warn "Yedek farklı projeden: ${BACKUP_PROJECT} → ${PROJECT_ID}"
+    warn "Volume isimleri bu projeye göre yeniden yazılacak"
+  fi
+
+  # Manifest hash doğrulaması
+  step "Manifest doğrulaması"
+  if ! verify_manifest_hashes "$BACKUP_PATH" >/dev/null 2>&1; then
+    err "Yedek bütünlüğü bozuk!"
+    if ! confirm "Yine de devam edilsin mi? (çok riskli)" "n"; then
+      exit 1
+    fi
+  else
+    ok "Tüm sha256'lar geçerli"
+  fi
+
+  # Stack durumu
+  local STACK_RUNNING=false
+  if (cd "$WORKDIR" && supabase status >/dev/null 2>&1); then
+    STACK_RUNNING=true
+    info "Stack: ${GRN}çalışıyor${R}"
+  else
+    info "Stack: ${D}çalışmıyor${R}"
+  fi
+
+  # Strateji seç
+  pick_strategy
+  info "Strateji: ${B}${STRATEGY}${R}"
+
+  # Bileşenleri keşfet + default + flag + interaktif
+  discover_components "$BACKUP_PATH"
+  if (( ${#AVAILABLE_COMPONENTS[@]} == 0 )); then
+    err "Yedekte hiç restore edilebilir bileşen yok"
+    exit 1
+  fi
+  init_default_selection
+  apply_components_flag
+  interactive_components_menu
+
+  # Strateji uyumluluğu
+  if [[ "$STRATEGY" == "volume" ]] && is_selected "sql" && ! is_selected "db"; then
+    warn "volume stratejisinde 'sql' bileşeni kullanılmaz"
+  fi
+  if [[ "$STRATEGY" == "sql" ]] && is_selected "db" && ! is_selected "sql"; then
+    warn "sql stratejisinde 'db' (volume) yerine 'sql' kullanılmalı"
+  fi
+
+  local SEL
+  SEL=$(selected_list)
+  if [[ -z "$SEL" ]]; then
+    err "Hiç bileşen seçilmedi"
+    exit 1
+  fi
+
+  # Plan özeti
+  step "Restore Planı"
+  echo "  ${B}Yedek:${R}      $(basename "$BACKUP_PATH")"
+  echo "  ${B}Strateji:${R}   ${CYN}${STRATEGY}${R}"
+  echo "  ${B}Bileşenler:${R} ${CYN}${SEL}${R}"
+  echo "  ${B}Pre-backup:${R} $($DO_PRE_BACKUP && echo "${GRN}evet${R}" || echo "${YEL}HAYIR${R}")"
+  echo "  ${B}Dry-run:${R}    $($DRY_RUN && echo "${YEL}evet (hiçbir şey yapılmayacak)${R}" || echo "hayır")"
+
+  if $DRY_RUN; then
+    echo
+    info "${YEL}--dry-run${R} → çıkılıyor"
+    exit 0
+  fi
+
+  echo
+  warn "${B}Bu işlem mevcut DB ve volume'ları ÜZERİNE YAZAR.${R}"
+  if ! confirm "Devam edilsin mi?" "n"; then
+    err "İptal"; exit 0
+  fi
+
+  # ───── Pre-restore yedek ─────
+  if $DO_PRE_BACKUP; then
+    step "Pre-restore yedek"
+    if ! $STACK_RUNNING; then
+      warn "Stack çalışmıyor — pre-restore yedek alınamaz, atlanıyor"
+    else
+      local BACKUP_SCRIPT
+      BACKUP_SCRIPT="$(dirname "$(readlink -f "$0")")/supabase-backup.sh"
+      [[ ! -x "$BACKUP_SCRIPT" ]] && BACKUP_SCRIPT="$(command -v supabase-backup 2>/dev/null || echo "")"
+      if [[ -z "$BACKUP_SCRIPT" ]] || [[ ! -x "$BACKUP_SCRIPT" ]]; then
+        warn "supabase-backup.sh bulunamadı — pre-restore yedek atlanıyor"
+      else
+        info "Çalıştırılıyor: ${D}${BACKUP_SCRIPT} --quiet${R}"
+        local pre_args=(--quiet)
+        [[ -n "$WORKDIR_OVERRIDE" ]] && pre_args+=(--workdir "$WORKDIR_OVERRIDE")
+        if "$BACKUP_SCRIPT" "${pre_args[@]}"; then
+          ok "Pre-restore yedek alındı"
+        else
+          err "Pre-restore yedek başarısız"
+          if ! confirm "Yedeksiz devam edilsin mi?" "n"; then exit 1; fi
+        fi
+      fi
+    fi
+  fi
+
+  # ───── Stack'i durdur (volume restore için zorunlu) ─────
+  local NEED_STACK_STOP=false
+  if is_selected "db" || is_selected "storage" || is_selected "edge"; then
+    NEED_STACK_STOP=true
+  fi
+
+  local RESTARTED=false
+  if $NEED_STACK_STOP && $STACK_RUNNING; then
+    step "Stack durduruluyor"
+    info "Volume restore için stack stop --no-backup gerekiyor"
+    if (cd "$WORKDIR" && supabase stop --no-backup); then
+      ok "Stack durduruldu, volume'lar serbest"
+      RESTARTED=true
+    else
+      err "Stack durdurulamadı"
+      exit 1
+    fi
+  fi
+
+  # ───── Volume restore ─────
+  if is_selected "db" || is_selected "storage" || is_selected "edge"; then
+    step "Volume restore"
+
+    is_selected "db" && \
+      restore_volume "supabase_db_${PROJECT_ID}" "${BACKUP_PATH}/volumes/db.tar.zst"
+
+    is_selected "storage" && [[ -f "${BACKUP_PATH}/volumes/storage.tar.zst" ]] && \
+      restore_volume "supabase_storage_${PROJECT_ID}" "${BACKUP_PATH}/volumes/storage.tar.zst"
+
+    is_selected "edge" && [[ -f "${BACKUP_PATH}/volumes/edge_runtime.tar.zst" ]] && \
+      restore_volume "supabase_edge_runtime_${PROJECT_ID}" "${BACKUP_PATH}/volumes/edge_runtime.tar.zst"
+  fi
+
+  # ───── Functions / Config (DB-bağımsız) ─────
+  if is_selected "functions"; then
+    step "Edge Functions restore"
+    restore_functions "$BACKUP_PATH" "$WORKDIR"
+  fi
+
+  if is_selected "config"; then
+    step "Config restore"
+    restore_config "$BACKUP_PATH" "$WORKDIR"
+  fi
+
+  # ───── Stack'i başlat (SQL restore'dan ÖNCE — pg lazım) ─────
+  if $RESTARTED; then
+    step "Stack başlatılıyor"
+    if (cd "$WORKDIR" && supabase start); then
+      ok "Stack başladı"
+      # DB container hazır olmasını bekle
+      local tries=0
+      while (( tries < 30 )); do
+        docker exec "$DB_CONTAINER" psql -U postgres -t -c "SELECT 1;" >/dev/null 2>&1 && break
+        sleep 1
+        tries=$((tries+1))
+      done
+    else
+      err "Stack başlatılamadı"
+      exit 1
+    fi
+  fi
+
+  # ───── SQL restore (stack açıkken) ─────
+  if is_selected "sql"; then
+    step "SQL restore (pg_restore)"
+    if ! docker exec "$DB_CONTAINER" psql -U postgres -c "SELECT 1;" >/dev/null 2>&1; then
+      err "DB container hazır değil"; exit 1
+    fi
+    restore_sql "$BACKUP_PATH" "$DB_CONTAINER" || exit 1
+  fi
+
+  # ───── Hibrit doğrulama ─────
+  if [[ "$STRATEGY" == "hybrid" ]]; then
+    step "Hibrit doğrulama"
+    verify_hybrid "$BACKUP_PATH" "$DB_CONTAINER"
+  fi
+
+  # ───── Sağlık kontrolü ─────
+  step "Sağlık kontrolü"
+  local HEALTH_OK=false
+  if docker exec "$DB_CONTAINER" psql -U postgres -t -c "SELECT 1;" >/dev/null 2>&1; then
+    local pg_v table_n user_n bucket_n
+    pg_v=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c "SHOW server_version;" 2>/dev/null | xargs)
+    table_n=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
+      "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null | xargs)
+    user_n=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
+      "SELECT count(*) FROM auth.users;" 2>/dev/null | xargs)
+    bucket_n=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
+      "SELECT count(*) FROM storage.buckets;" 2>/dev/null | xargs)
+    ok "DB sağlıklı ${D}(PG ${pg_v})${R}"
+    info "  ${table_n:-0} public tablo, ${user_n:-0} kullanıcı, ${bucket_n:-0} bucket"
+    HEALTH_OK=true
+  else
+    warn "DB ping başarısız"
+  fi
+
+  # ───── Özet ─────
+  echo
+  if $HEALTH_OK; then
+    echo "${BG_GRN}  RESTORE TAMAMLANDI  ${R}"
+  else
+    echo "${BG_YEL}  RESTORE BİTTİ — SAĞLIK SORUNU  ${R}"
+  fi
+  echo
+  echo "  ${B}Yedek:${R}      $(basename "$BACKUP_PATH")"
+  echo "  ${B}Strateji:${R}   ${CYN}${STRATEGY}${R}"
+  echo "  ${B}Bileşenler:${R} ${CYN}${SEL}${R}"
+  $HEALTH_OK && echo "  ${B}Durum:${R}      ${GRN}sağlıklı${R}"
+  echo
+  detail "Sorun olursa: pre-restore yedek aynı dizinde, ${B}supabase-restore --latest${R} ile geri dönebilirsiniz"
+}
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  ROUTER                                                            ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+case "$MODE" in
+  list)    cmd_list ;;
+  verify)  cmd_verify ;;
+  restore) cmd_restore ;;
+esac
