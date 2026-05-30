@@ -11,13 +11,63 @@ Proje SQL dosyaları, migration dosyaları, seed verileri, `.env` dosyaları ve 
 ```txt
 supabase-bootstrap/
   README.md
-  install_supabase.sh
-  reset_supabase.sh
+  AGENTS.md
+  scripts/check.sh
+  scripts/integration-scenario.sh
+  tests/backup-restore-contracts.bats
+  tests/scenario-matrix.bats
+  tests/supabase-update.bats
+  spec/supabase_update_spec.sh
+  supabase-install.sh
+  supabase-reset.sh
+  supabase-update.sh
+  supabase-backup.sh
+  supabase-restore.sh
 ```
+
+## Geliştirme kontrolleri
+
+Shell script değişikliğinden sonra çalıştır:
+
+```bash
+./scripts/check.sh
+```
+
+Daha sıkı release/refactor kontrolü:
+
+```bash
+./scripts/check.sh --strict
+```
+
+`--strict`, tüm shell scriptlerde ShellCheck style seviyesini ve shfmt drift'ini bloklar.
+
+Kullanılan araçlar:
+
+```txt
+shellcheck
+shfmt
+bats
+shellspec
+checkbashisms
+```
+
+Hızlı testler fake command ve fixture verilerle çalışır. Gerçek Supabase stack üzerinde hafif smoke:
+
+```bash
+./scripts/integration-scenario.sh
+```
+
+Ağır release/drill senaryoları manuel/scheduled çalıştırılmalıdır:
+
+```bash
+./scripts/integration-scenario.sh --scenario all
+```
+
+Detaylar: `docs/integration-scenarios.md`
 
 ## Ne kurar?
 
-`install_supabase.sh` Ubuntu üzerinde şunları kurar:
+`supabase-install.sh` Ubuntu üzerinde şunları kurar:
 
 ```txt
 Docker Engine
@@ -33,7 +83,7 @@ Temel yardımcı paketler
 
 ## Ne yapmaz?
 
-`install_supabase.sh` şunları yapmaz:
+`supabase-install.sh` şunları yapmaz:
 
 ```txt
 Supabase projesi init etmez
@@ -55,8 +105,8 @@ HTTPS ile:
 ```bash
 git clone https://github.com/alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x install_supabase.sh
-./install_supabase.sh
+chmod +x supabase-install.sh
+./supabase-install.sh
 ```
 
 SSH ile:
@@ -64,8 +114,8 @@ SSH ile:
 ```bash
 git clone git@github.com:alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x install_supabase.sh
-./install_supabase.sh
+chmod +x supabase-install.sh
+./supabase-install.sh
 ```
 
 SSH kullanımı için sunucuda GitHub SSH key tanımlı olmalıdır.
@@ -75,23 +125,23 @@ SSH kullanımı için sunucuda GitHub SSH key tanımlı olmalıdır.
 `curl` ile:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh -o install_supabase.sh
-chmod +x install_supabase.sh
-./install_supabase.sh
+curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh -o supabase-install.sh
+chmod +x supabase-install.sh
+./supabase-install.sh
 ```
 
 `wget` ile:
 
 ```bash
-wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh -O install_supabase.sh
-chmod +x install_supabase.sh
-./install_supabase.sh
+wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh -O supabase-install.sh
+chmod +x supabase-install.sh
+./supabase-install.sh
 ```
 
 ### Tek komutla kurulum
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh?$(date +%s)")
+bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh?$(date +%s)")
 ```
 
 > Not: Script interaktif çalışır. Devam etmek isteyip istemediğini sorar.
@@ -111,31 +161,31 @@ SUPABASE_VERSION=2.95.5
 Normal kullanım:
 
 ```bash
-./install_supabase.sh
+./supabase-install.sh
 ```
 
 Belirli Supabase CLI sürümü kurmak için:
 
 ```bash
-SUPABASE_VERSION=2.96.0 ./install_supabase.sh
+SUPABASE_VERSION=2.96.0 ./supabase-install.sh
 ```
 
 En güncel Supabase CLI release sürümünü kurmak için:
 
 ```bash
-SUPABASE_CHANNEL=latest ./install_supabase.sh
+SUPABASE_CHANNEL=latest ./supabase-install.sh
 ```
 
 Node.js sürümünü değiştirmek için:
 
 ```bash
-NODE_VERSION=24 ./install_supabase.sh
+NODE_VERSION=24 ./supabase-install.sh
 ```
 
 Tek komutla latest kurmak için:
 
 ```bash
-SUPABASE_CHANNEL=latest bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/install_supabase.sh)
+SUPABASE_CHANNEL=latest bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh)
 ```
 
 ## Stable ve latest farkı
@@ -198,7 +248,7 @@ supabase-otonorm/
 
 ## Reset / temizlik scripti
 
-`reset_supabase.sh`, mevcut local Supabase/Docker ortamını temizlemek için yardımcı script’tir.
+`supabase-reset.sh`, mevcut local Supabase/Docker ortamını temizlemek için yardımcı script’tir.
 
 Script önce hedef klasörü sorar. Varsayılan hedef:
 
@@ -217,8 +267,8 @@ HTTPS ile:
 ```bash
 git clone https://github.com/alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x reset_supabase.sh
-./reset_supabase.sh
+chmod +x supabase-reset.sh
+./supabase-reset.sh
 ```
 
 SSH ile:
@@ -226,8 +276,8 @@ SSH ile:
 ```bash
 git clone git@github.com:alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x reset_supabase.sh
-./reset_supabase.sh
+chmod +x supabase-reset.sh
+./supabase-reset.sh
 ```
 
 ### Tek dosya indirip çalıştırma
@@ -235,23 +285,23 @@ chmod +x reset_supabase.sh
 `curl` ile:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh -o reset_supabase.sh
-chmod +x reset_supabase.sh
-./reset_supabase.sh
+curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-reset.sh -o supabase-reset.sh
+chmod +x supabase-reset.sh
+./supabase-reset.sh
 ```
 
 `wget` ile:
 
 ```bash
-wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh -O reset_supabase.sh
-chmod +x reset_supabase.sh
-./reset_supabase.sh
+wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-reset.sh -O supabase-reset.sh
+chmod +x supabase-reset.sh
+./supabase-reset.sh
 ```
 
 ### Tek komutla çalıştırma
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/reset_supabase.sh?$(date +%s)")
+bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-reset.sh?$(date +%s)")
 ```
 
 > Not: Reset scripti interaktif çalışır. Hedef klasörü ve yapmak istediğin işlemi sorar.
@@ -344,6 +394,6 @@ Asıl veritabanı kaynakları ayrı private repoda durur.
 
 ## Not
 
-`install_supabase.sh`, Docker grubuna mevcut kullanıcıyı ekler. Bu değişiklik genelde logout/login veya reboot sonrası aktif olur.
+`supabase-install.sh`, Docker grubuna mevcut kullanıcıyı ekler. Bu değişiklik genelde logout/login veya reboot sonrası aktif olur.
 
 Bu yüzden kurulumdan sonra `sudo reboot` önerilir.

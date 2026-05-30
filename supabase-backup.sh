@@ -2,6 +2,21 @@
 #
 # supabase-backup.sh — Self-hosted Supabase için hibrit tam yedekleme.
 #
+# Agent contract:
+#   Purpose:
+#     Self-hosted/local Supabase projesinden restore edilebilir tam yedek üretir.
+#   Workflow:
+#     1. Proje ve çalışan stack tespit edilir.
+#     2. DB lint/güvenlik denetimi alınır.
+#     3. Portable SQL dump + raw pg_dump custom dump üretilir.
+#     4. Docker volume, Edge Functions, config ve metadata arşivlenir.
+#     5. manifest.json yazılır ve yedek doğrulanır.
+#   Safety:
+#     Backup modu destructive değildir; sadece OUTPUT_DIR altına yazar.
+#     --prune modu destructive'dir ve eski yedek klasörlerini silmeden önce onay ister.
+#   Machine-readable contract:
+#     --quiet çıktısında update script'in parse edebilmesi için yedek path'i korunur.
+#
 # Hibrit yedek = portable (Supabase'in resmi dump'ı) + raw (gerçek tam pg_dump)
 #
 # Yapı:
@@ -25,16 +40,17 @@
 #   supabase-backup --output <dir>          yedek dizinini özelleştir
 #   supabase-backup --help
 
-set -euo pipefail
+set -Eeuo pipefail
+IFS=$'\n\t'
 
 # ╔═══════════════════════════════════════════════════════════════════╗
 # ║  RENKLER & UI                                                      ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 
 if [[ -t 1 ]]; then
-  R=$'\033[0m'     # reset
-  B=$'\033[1m'     # bold
-  D=$'\033[2m'     # dim
+  R=$'\033[0m' # reset
+  B=$'\033[1m' # bold
+  D=$'\033[2m' # dim
   # Foreground
   RED=$'\033[38;5;203m'
   GRN=$'\033[38;5;120m'
@@ -47,16 +63,27 @@ if [[ -t 1 ]]; then
   BG_BLU=$'\033[48;5;24m\033[38;5;255m'
   BG_GRN=$'\033[48;5;22m\033[38;5;255m'
 else
-  R=""; B=""; D=""; RED=""; GRN=""; YEL=""; BLU=""; MAG=""; CYN=""; GRY=""; BG_BLU=""; BG_GRN=""
+  R=""
+  B=""
+  D=""
+  RED=""
+  GRN=""
+  YEL=""
+  BLU=""
+  MAG=""
+  CYN=""
+  GRY=""
+  BG_BLU=""
+  BG_GRN=""
 fi
 
 QUIET=false
 
-info()    { $QUIET || echo "${BLU}│${R} $*"; }
-ok()      { $QUIET || echo "${GRN}✓${R} $*"; }
-warn()    { echo "${YEL}⚠${R} $*"; }
-err()     { echo "${RED}✗${R} $*" >&2; }
-detail()  { $QUIET || echo "  ${D}$*${R}"; }
+info() { $QUIET || echo "${BLU}│${R} $*"; }
+ok() { $QUIET || echo "${GRN}✓${R} $*"; }
+warn() { echo "${YEL}⚠${R} $*"; }
+err() { echo "${RED}✗${R} $*" >&2; }
+detail() { $QUIET || echo "  ${D}$*${R}"; }
 
 step() {
   $QUIET && return
@@ -82,21 +109,68 @@ OUTPUT_DIR="${HOME}/supabase-backups"
 OLDER_THAN=""
 VERIFY_PATH=""
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '/^# Kullanım:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workdir)      WORKDIR_OVERRIDE="$2"; shift 2 ;;
-    --output)       OUTPUT_DIR="$2"; shift 2 ;;
-    --list)         MODE="list"; shift ;;
-    --verify)       MODE="verify"; VERIFY_PATH="$2"; shift 2 ;;
-    --prune)        MODE="prune"; shift ;;
-    --older-than)   OLDER_THAN="$2"; shift 2 ;;
-    --quiet)        QUIET=true; shift ;;
-    -h|--help)      usage ;;
-    *) err "Bilinmeyen argüman: $1"; echo "Yardım: $0 --help"; exit 1 ;;
-  esac
-done
+fail() {
+  err "$*"
+  exit 1
+}
+
+need_value() {
+  local option="$1"
+  local value="${2:-}"
+
+  if [[ -z "$value" || "$value" == --* ]]; then
+    fail "${option} değer ister"
+  fi
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --workdir)
+        need_value "$1" "${2:-}"
+        WORKDIR_OVERRIDE="$2"
+        shift 2
+        ;;
+      --output)
+        need_value "$1" "${2:-}"
+        OUTPUT_DIR="$2"
+        shift 2
+        ;;
+      --list)
+        MODE="list"
+        shift
+        ;;
+      --verify)
+        need_value "$1" "${2:-}"
+        MODE="verify"
+        VERIFY_PATH="$2"
+        shift 2
+        ;;
+      --prune)
+        MODE="prune"
+        shift
+        ;;
+      --older-than)
+        need_value "$1" "${2:-}"
+        OLDER_THAN="$2"
+        shift 2
+        ;;
+      --quiet)
+        QUIET=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *)
+        fail "Bilinmeyen argüman: $1"
+        ;;
+    esac
+  done
+}
 
 # ╔═══════════════════════════════════════════════════════════════════╗
 # ║  YARDIMCI FONKSİYONLAR                                             ║
@@ -121,35 +195,686 @@ detect_workdir() {
 
 human_size() {
   local bytes=${1:-0}
-  if (( bytes < 1024 )); then echo "${bytes} B"
-  elif (( bytes < 1048576 )); then printf "%.1f KB" "$(echo "$bytes/1024" | bc -l 2>/dev/null || echo $(( bytes / 1024 )))"
-  elif (( bytes < 1073741824 )); then printf "%.1f MB" "$(echo "$bytes/1048576" | bc -l 2>/dev/null || echo $(( bytes / 1048576 )))"
-  else printf "%.2f GB" "$(echo "$bytes/1073741824" | bc -l 2>/dev/null || echo $(( bytes / 1073741824 )))"
+  if ((bytes < 1024)); then
+    echo "${bytes} B"
+  elif ((bytes < 1048576)); then
+    printf "%.1f KB" "$(echo "$bytes/1024" | bc -l 2> /dev/null || echo $((bytes / 1024)))"
+  elif ((bytes < 1073741824)); then
+    printf "%.1f MB" "$(echo "$bytes/1048576" | bc -l 2> /dev/null || echo $((bytes / 1048576)))"
+  else
+    printf "%.2f GB" "$(echo "$bytes/1073741824" | bc -l 2> /dev/null || echo $((bytes / 1073741824)))"
   fi
 }
 
-file_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
-file_hash() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+file_size() { stat -c%s "$1" 2> /dev/null || stat -f%z "$1" 2> /dev/null || echo 0; }
+file_hash() { sha256sum "$1" 2> /dev/null | awk '{print $1}'; }
 
-# SQL dump'ın gerçekten SQL içerip içermediğini kontrol et
-# Boş dosya tespit edilirse hata dönder (dump başarısız olmuş demektir)
+# Contract:
+#   Purpose:
+#     Manifest'e girecek dosya boyutu ve sha256 bilgisini tek noktadan kaydeder.
+#   Inputs:
+#     $1: manifest içindeki relative key
+#     $2: gerçek dosya yolu
+#     $3: FILE_SIZES nameref adı
+#     $4: FILE_HASHES nameref adı
+#   Effects:
+#     Verilen associative array'leri günceller.
+record_file_metadata() {
+  local key="$1"
+  local file="$2"
+  local -n sizes_ref="$3"
+  local -n hashes_ref="$4"
+
+  sizes_ref["$key"]=$(file_size "$file")
+  hashes_ref["$key"]=$(file_hash "$file")
+}
+
+# Contract:
+#   Purpose:
+#     Proje adına ait Supabase Docker volume'larını keşfeder.
+#   Inputs:
+#     $1: PROJECT_ID
+#   Outputs:
+#     stdout: her satırda bir volume adı
+#   Safety:
+#     Sadece docker metadata okur; volume içeriğine dokunmaz.
+discover_project_volumes() {
+  local project_id="$1"
+
+  docker volume ls --format '{{.Name}}' | grep "_${project_id}$" 2> /dev/null || true
+}
+
+json_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  printf '%s' "$value"
+}
+
+# Contract:
+#   Purpose:
+#     Backup manifest JSON dosyasını tek noktadan üretir.
+#   Inputs:
+#     $1: manifest path
+#     $2: timestamp
+#     $3: project_id
+#     $4: workdir
+#     $5: Supabase CLI version
+#     $6: PostgreSQL version
+#     $7-$11: VOLUMES/STATS/SECURITY_WARNINGS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     manifest.json dosyasını yazar.
+#   Safety:
+#     String alanları JSON escape eder; sayı alanları manifest stats değerlerinden alınır.
+write_manifest() {
+  local manifest="$1"
+  local ts="$2"
+  local project_id="$3"
+  local workdir="$4"
+  local cli_version="$5"
+  local pg_version="$6"
+  local volumes_name="$7"
+  local stats_name="$8"
+  local warnings_name="$9"
+  local sizes_name="${10}"
+  local hashes_name="${11}"
+  declare -n volumes_ref="$volumes_name"
+  declare -n stats_ref="$stats_name"
+  declare -n warnings_ref="$warnings_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  {
+    echo "{"
+    echo "  \"backup_version\": \"3.0\","
+    echo "  \"strategy\": \"hybrid+metadata+security\","
+    printf '  "timestamp": "%s",\n' "$(json_escape "$ts")"
+    printf '  "created_at": "%s",\n' "$(date -Iseconds)"
+    printf '  "hostname": "%s",\n' "$(json_escape "$(hostname)")"
+    printf '  "project_id": "%s",\n' "$(json_escape "$project_id")"
+    printf '  "workdir": "%s",\n' "$(json_escape "$workdir")"
+    printf '  "supabase_cli": "%s",\n' "$(json_escape "$cli_version")"
+    printf '  "postgres_version": "%s",\n' "$(json_escape "$pg_version")"
+    echo "  \"volumes_backed_up\": ["
+    local first=true
+    local value
+    for value in "${volumes_ref[@]}"; do
+      $first && first=false || echo ","
+      printf '    "%s"' "$(json_escape "$value")"
+    done
+    echo ""
+    echo "  ],"
+    echo "  \"stats\": {"
+    echo "    \"user_schemas\": ${stats_ref[total_schemas]:-0},"
+    echo "    \"public_tables\": ${stats_ref[public_tables]:-0},"
+    echo "    \"auth_users\": ${stats_ref[auth_users]:-0},"
+    echo "    \"storage_buckets\": ${stats_ref[storage_buckets]:-0},"
+    echo "    \"storage_objects\": ${stats_ref[storage_objects]:-0},"
+    echo "    \"storage_files\": ${stats_ref[storage_files]:-0},"
+    echo "    \"extensions\": ${stats_ref[extensions]:-0},"
+    echo "    \"migrations\": ${stats_ref[migrations]:-0},"
+    echo "    \"restore_objects\": ${stats_ref[restore_objects]:-0},"
+    echo "    \"restore_schemas\": ${stats_ref[restore_schemas]:-0},"
+    echo "    \"restore_tables\": ${stats_ref[restore_tables]:-0},"
+    echo "    \"restore_functions\": ${stats_ref[restore_functions]:-0},"
+    echo "    \"functions\": ${stats_ref[function_count]:-0}"
+    echo "  },"
+    echo "  \"security_warnings\": ["
+    first=true
+    for value in "${warnings_ref[@]}"; do
+      $first && first=false || echo ","
+      printf '    "%s"' "$(json_escape "$value")"
+    done
+    echo ""
+    echo "  ],"
+    echo "  \"files\": {"
+    first=true
+    local key
+    for key in "${!hashes_ref[@]}"; do
+      $first && first=false || echo ","
+      printf '    "%s": {"size": %d, "sha256": "%s"}' \
+        "$(json_escape "$key")" "${sizes_ref[$key]}" "$(json_escape "${hashes_ref[$key]}")"
+    done
+    echo ""
+    echo "  }"
+    echo "}"
+  } > "$manifest"
+}
+
+# Contract:
+#   Purpose:
+#     Backup öncesi Supabase lint ve temel güvenlik kontrollerini çalıştırır.
+#   Inputs:
+#     $1: WORKDIR
+#     $2: DB container adı
+#     $3: backup timestamp
+#     $4: BACKUP_PATH
+#     $5-$7: SECURITY_WARNINGS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     security/audit.txt dosyasını yazar.
+#     SECURITY_WARNINGS ve manifest file metadata array'lerini günceller.
+#   Safety:
+#     DB üzerinde sadece read-only SELECT ve `supabase db lint` çalıştırır.
+run_security_audit() {
+  local workdir="$1"
+  local db_container="$2"
+  local ts="$3"
+  local backup_path="$4"
+  local warnings_name="$5"
+  local sizes_name="$6"
+  local hashes_name="$7"
+  declare -n warnings_ref="$warnings_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Pre-backup: Lint + Güvenlik"
+
+  info "  supabase db lint --local..."
+  local lint_output
+  if lint_output=$(cd "$workdir" && supabase db lint --local --level warning 2>&1); then
+    if echo "$lint_output" | grep -qE '^(WARNING|ERROR|warning:|error:|Level: (warning|error))'; then
+      warn "  Lint uyarıları var:"
+      echo "$lint_output" | head -10 | sed 's/^/      /'
+      warnings_ref+=("lint: schema uyarıları var")
+    else
+      ok "  Lint temiz"
+    fi
+  else
+    warn "  Lint çalıştırılamadı (atlanıyor)"
+  fi
+
+  info "  RLS kontrolü (public şema)..."
+  local rls_missing
+  rls_missing=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND rowsecurity=false;" 2> /dev/null | xargs || echo 0)
+  if [[ "$rls_missing" -gt 0 ]]; then
+    warn "  ${rls_missing} public tabloda RLS kapalı"
+    warnings_ref+=("rls: ${rls_missing} public tablo RLS'siz")
+  else
+    ok "  Tüm public tablolarda RLS açık"
+  fi
+
+  info "  Deprecated auth.role() kontrolü..."
+  local deprecated_count
+  deprecated_count=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT count(*) FROM pg_policies WHERE qual LIKE '%auth.role()%' OR with_check LIKE '%auth.role()%';" 2> /dev/null | xargs || echo 0)
+  if [[ "$deprecated_count" -gt 0 ]]; then
+    warn "  ${deprecated_count} policy'de deprecated auth.role() kullanımı"
+    warnings_ref+=("deprecated: ${deprecated_count} policy auth.role() kullanıyor")
+  else
+    ok "  Deprecated kullanım yok"
+  fi
+
+  info "  WITH CHECK eksikliği kontrolü..."
+  local missing_check
+  missing_check=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT count(*) FROM pg_policies WHERE cmd='UPDATE' AND with_check IS NULL;" 2> /dev/null | xargs || echo 0)
+  if [[ "$missing_check" -gt 0 ]]; then
+    warn "  ${missing_check} UPDATE policy'sinde WITH CHECK eksik"
+    warnings_ref+=("with_check: ${missing_check} UPDATE policy WITH CHECK'siz")
+  else
+    ok "  Tüm UPDATE policy'ler WITH CHECK içeriyor"
+  fi
+
+  info "  SECURITY DEFINER public schema kontrolü..."
+  local sec_definer
+  sec_definer=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef=true;" 2> /dev/null | xargs || echo 0)
+  if [[ "$sec_definer" -gt 0 ]]; then
+    warn "  ${sec_definer} adet SECURITY DEFINER fonksiyon public şemada"
+    warnings_ref+=("sec_definer: ${sec_definer} public SECURITY DEFINER func")
+  else
+    ok "  Public şemada SECURITY DEFINER fonksiyon yok"
+  fi
+
+  local sec_report="${backup_path}/security/audit.txt"
+  {
+    echo "# Supabase Güvenlik Denetimi — ${ts}"
+    echo "# Kaynak: backup öncesi otomatik kontrol"
+    echo ""
+    echo "## Bulgular"
+    if ((${#warnings_ref[@]} == 0)); then
+      echo "Hiç uyarı yok — sistem temiz."
+    else
+      printf -- "- %s\n" "${warnings_ref[@]}"
+    fi
+    echo ""
+    echo "## RLS'siz public tablolar"
+    docker exec "$db_container" psql -U postgres -c \
+      "SELECT schemaname, tablename FROM pg_tables WHERE schemaname='public' AND rowsecurity=false;" 2> /dev/null || true
+    echo ""
+    echo "## Deprecated auth.role() kullanan policy'ler"
+    docker exec "$db_container" psql -U postgres -c \
+      "SELECT schemaname, tablename, policyname FROM pg_policies WHERE qual LIKE '%auth.role()%' OR with_check LIKE '%auth.role()%';" 2> /dev/null || true
+  } > "$sec_report" 2> /dev/null
+
+  record_file_metadata "security/audit.txt" "$sec_report" "$sizes_name" "$hashes_name"
+}
+
+# Contract:
+#   Purpose:
+#     Supabase CLI'nin portable SQL dump çıktısını üretir.
+#   Inputs:
+#     $1: WORKDIR
+#     $2: BACKUP_PATH
+#     $3-$4: FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     database/{roles,schema,data}.sql.zst dosyalarını yazar.
+#   Failure:
+#     Dump veya SQL doğrulama başarısızsa exit 1.
+dump_portable_sql() {
+  local workdir="$1"
+  local backup_path="$2"
+  local sizes_name="$3"
+  local hashes_name="$4"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Database: Resmi dump (taşınabilir)"
+
+  pushd "$workdir" > /dev/null
+
+  for component in roles schema data; do
+    local out="${backup_path}/database/${component}.sql.zst"
+    info "  ${component}.sql.zst yazılıyor..."
+
+    local flags=()
+    case "$component" in
+      roles) flags=(--role-only) ;;
+      schema) flags=() ;;
+      data) flags=(--data-only --use-copy) ;;
+    esac
+
+    if supabase db dump --local "${flags[@]}" 2> /dev/null | zstd -q -o "$out"; then
+      local size
+      size=$(file_size "$out")
+
+      if ! verify_sql_zst "$out"; then
+        err "  ${component} dump boş veya geçersiz — dump başarısız!"
+        popd > /dev/null
+        exit 1
+      fi
+
+      record_file_metadata "database/${component}.sql.zst" "$out" "$sizes_name" "$hashes_name"
+      ok "  ${component}.sql.zst ${D}($(human_size "$size"))${R}"
+    else
+      err "  ${component} dump başarısız"
+      popd > /dev/null
+      exit 1
+    fi
+  done
+
+  popd > /dev/null
+}
+
+# Contract:
+#   Purpose:
+#     Auth/storage dahil tam Postgres custom dump üretir.
+#   Inputs:
+#     $1: DB container
+#     $2: BACKUP_PATH
+#     $3-$5: STATS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     database/full-cluster.dump.zst yazar ve temel içerik istatistiklerini kaydeder.
+#   Failure:
+#     pg_dump başarısızsa exit 1.
+dump_full_cluster() {
+  local db_container="$1"
+  local backup_path="$2"
+  local stats_name="$3"
+  local sizes_name="$4"
+  local hashes_name="$5"
+  declare -n stats_ref="$stats_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Database: Raw pg_dump (tam yedek)"
+
+  local out="${backup_path}/database/full-cluster.dump.zst"
+  info "  pg_dump --format=custom (auth, storage, public, hepsi)..."
+
+  if docker exec "$db_container" pg_dump -U postgres -d postgres \
+    --format=custom --no-owner --no-privileges --compress=0 2> /dev/null |
+    zstd -q -o "$out"; then
+    local size
+    size=$(file_size "$out")
+    record_file_metadata "database/full-cluster.dump.zst" "$out" "$sizes_name" "$hashes_name"
+    ok "  full-cluster.dump.zst ${D}($(human_size "$size"))${R}"
+  else
+    err "  pg_dump başarısız"
+    exit 1
+  fi
+
+  info "  İçerik analizi..."
+  stats_ref["public_tables"]=$(docker exec "$db_container" psql -U postgres -t -c \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2> /dev/null | xargs || echo 0)
+  stats_ref["auth_users"]=$(docker exec "$db_container" psql -U postgres -t -c \
+    "SELECT count(*) FROM auth.users;" 2> /dev/null | xargs || echo 0)
+  stats_ref["storage_buckets"]=$(docker exec "$db_container" psql -U postgres -t -c \
+    "SELECT count(*) FROM storage.buckets;" 2> /dev/null | xargs || echo 0)
+  stats_ref["storage_objects"]=$(docker exec "$db_container" psql -U postgres -t -c \
+    "SELECT count(*) FROM storage.objects;" 2> /dev/null | xargs || echo 0)
+  stats_ref["total_schemas"]=$(docker exec "$db_container" psql -U postgres -t -c \
+    "SELECT count(*) FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name NOT IN ('information_schema');" 2> /dev/null | xargs || echo 0)
+
+  ok "  ${stats_ref[total_schemas]} kullanıcı şeması, ${stats_ref[public_tables]} public tablo"
+  ok "  ${stats_ref[auth_users]} kullanıcı (auth.users)"
+  ok "  ${stats_ref[storage_buckets]} bucket, ${stats_ref[storage_objects]} dosya kaydı (storage)"
+}
+
+# Contract:
+#   Purpose:
+#     Projeye ait Docker volume'larını tar+zstd arşivlerine dönüştürür.
+#   Inputs:
+#     $1: PROJECT_ID
+#     $2: BACKUP_PATH
+#     $3-$6: VOLUMES/STATS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     volumes/*.tar.zst dosyalarını yazar; storage file sayısını STATS'e işler.
+#   Safety:
+#     Volume'lar read-only mount edilir; container içeriği değiştirilmez.
+archive_volumes() {
+  local project_id="$1"
+  local backup_path="$2"
+  local volumes_name="$3"
+  local stats_name="$4"
+  local sizes_name="$5"
+  local hashes_name="$6"
+  declare -n volumes_ref="$volumes_name"
+  # shellcheck disable=SC2178 # nameref target name is a string; referenced value is an associative array
+  declare -n stats_ref="$stats_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Docker Volumes"
+
+  if ((${#volumes_ref[@]} == 0)); then
+    info "  Hiç volume bulunamadı — atlanıyor"
+    rmdir "${backup_path}/volumes" 2> /dev/null || true
+    return 0
+  fi
+
+  local vol
+  for vol in "${volumes_ref[@]}"; do
+    local short_name
+    short_name=$(echo "$vol" | sed -E "s/^supabase_(.+)_${project_id}$/\1/")
+    local out="${backup_path}/volumes/${short_name}.tar.zst"
+    info "  ${B}${vol}${R} → ${short_name}.tar.zst arşivleniyor..."
+
+    if docker run --rm -v "${vol}:/source:ro" alpine:latest \
+      tar -cf - -C /source . 2> /dev/null | zstd -q -o "$out" 2> /dev/null; then
+      local size file_count
+      size=$(file_size "$out")
+      record_file_metadata "volumes/${short_name}.tar.zst" "$out" "$sizes_name" "$hashes_name"
+      file_count=$(zstd -dc "$out" 2> /dev/null | tar -tf - 2> /dev/null | wc -l)
+      stats_ref["volume_${short_name}_files"]="$file_count"
+      ok "    ${short_name}.tar.zst ${D}($(human_size "$size"), ${file_count} öğe)${R}"
+    else
+      warn "    ${short_name} volume yedeklenemedi (boş veya erişim sorunu)"
+      rm -f "$out" 2> /dev/null || true
+    fi
+  done
+
+  stats_ref["storage_files"]="${stats_ref[volume_storage_files]:-0}"
+}
+
+# Contract:
+#   Purpose:
+#     Restore planı için servis, extension ve migration metadata snapshot'ı alır.
+#   Inputs:
+#     $1: WORKDIR
+#     $2: DB container
+#     $3: BACKUP_PATH
+#     $4-$6: STATS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     metadata/{services,extensions,migrations} dosyalarını yazar.
+snapshot_metadata() {
+  local workdir="$1"
+  local db_container="$2"
+  local backup_path="$3"
+  local stats_name="$4"
+  local sizes_name="$5"
+  local hashes_name="$6"
+  # shellcheck disable=SC2178 # nameref target name is a string; referenced value is an associative array
+  declare -n stats_ref="$stats_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Metadata snapshot"
+
+  local svc_file="${backup_path}/metadata/services.txt"
+  info "  Service versions..."
+  if (cd "$workdir" && supabase services list 2> /dev/null) > "$svc_file"; then
+    record_file_metadata "metadata/services.txt" "$svc_file" "$sizes_name" "$hashes_name"
+    local svc_count
+    svc_count=$({ grep -cE '^[[:space:]]+supabase/|^[[:space:]]+postgrest/' "$svc_file" 2> /dev/null || true; } | head -1)
+    svc_count=${svc_count:-0}
+    stats_ref["services"]="$svc_count"
+    ok "  services.txt ${D}(${svc_count} servis)${R}"
+  else
+    warn "  Service versions alınamadı"
+  fi
+
+  local ext_file="${backup_path}/metadata/extensions.tsv"
+  info "  Postgres extensions..."
+  if docker exec "$db_container" psql -U postgres -At -F$'\t' -c \
+    "SELECT extname, extversion FROM pg_extension ORDER BY extname;" 2> /dev/null > "$ext_file"; then
+    record_file_metadata "metadata/extensions.tsv" "$ext_file" "$sizes_name" "$hashes_name"
+    local ext_count
+    ext_count=$(wc -l < "$ext_file" 2> /dev/null | xargs)
+    stats_ref["extensions"]="$ext_count"
+    ok "  extensions.tsv ${D}(${ext_count} extension)${R}"
+  else
+    warn "  Extensions alınamadı"
+  fi
+
+  local mig_file="${backup_path}/metadata/migrations.txt"
+  info "  Migration history..."
+  if (cd "$workdir" && supabase migration list --local 2> /dev/null) > "$mig_file"; then
+    record_file_metadata "metadata/migrations.txt" "$mig_file" "$sizes_name" "$hashes_name"
+    local mig_count
+    mig_count=$({ grep -cE '^[[:space:]]+[0-9]{14}' "$mig_file" 2> /dev/null || true; } | head -1)
+    mig_count=${mig_count:-0}
+    stats_ref["migrations"]="$mig_count"
+    ok "  migrations.txt ${D}(${mig_count} migration)${R}"
+  else
+    warn "  Migration list alınamadı"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Supabase Edge Functions klasörünü restore edilebilir arşive çevirir.
+#   Inputs:
+#     $1: WORKDIR
+#     $2: BACKUP_PATH
+#     $3-$5: STATS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     functions/functions.tar.zst dosyasını yazar veya boş dizini kaldırır.
+archive_functions() {
+  local workdir="$1"
+  local backup_path="$2"
+  local stats_name="$3"
+  local sizes_name="$4"
+  local hashes_name="$5"
+  # shellcheck disable=SC2178 # nameref target name is a string; referenced value is an associative array
+  declare -n stats_ref="$stats_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Edge Functions"
+
+  local fn_dir="${workdir}/supabase/functions"
+  if [[ -d "$fn_dir" ]] && [[ -n "$(ls -A "$fn_dir" 2> /dev/null)" ]]; then
+    local out="${backup_path}/functions/functions.tar.zst"
+    info "  Functions arşivleniyor..."
+    if tar -cf - -C "${workdir}/supabase" functions 2> /dev/null | zstd -q -o "$out"; then
+      local size count
+      size=$(file_size "$out")
+      record_file_metadata "functions/functions.tar.zst" "$out" "$sizes_name" "$hashes_name"
+      count=$(find "$fn_dir" -type d -mindepth 1 -maxdepth 1 | wc -l)
+      stats_ref["function_count"]="$count"
+      ok "  functions.tar.zst ${D}($(human_size "$size"), ${count} function)${R}"
+    else
+      warn "  Functions yedeklenemedi"
+      rmdir "${backup_path}/functions" 2> /dev/null || true
+    fi
+  else
+    info "  Function bulunamadı — atlanıyor"
+    rmdir "${backup_path}/functions" 2> /dev/null || true
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Restore için gerekli Supabase config dosyalarını backup içine kopyalar.
+#   Inputs:
+#     $1: WORKDIR
+#     $2: BACKUP_PATH
+#     $3-$4: FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     config/config.toml ve varsa config/env.txt yazar.
+#   Safety:
+#     .env kopyası chmod 600 yapılır; secrets manifest'e yazılmaz, sadece hash/boyut yazılır.
+copy_config_files() {
+  local workdir="$1"
+  local backup_path="$2"
+  local sizes_name="$3"
+  local hashes_name="$4"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Config Dosyaları"
+
+  cp "${workdir}/supabase/config.toml" "${backup_path}/config/config.toml"
+  record_file_metadata "config/config.toml" "${backup_path}/config/config.toml" "$sizes_name" "$hashes_name"
+  ok "  config.toml"
+
+  if [[ -f "${workdir}/.env" ]]; then
+    cp "${workdir}/.env" "${backup_path}/config/env.txt"
+    chmod 600 "${backup_path}/config/env.txt"
+    record_file_metadata "config/env.txt" "${backup_path}/config/env.txt" "$sizes_name" "$hashes_name"
+    ok "  env.txt ${YEL}(hassas — chmod 600)${R}"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     full-cluster.dump.zst dosyasının pg_restore tarafından okunabildiğini doğrular.
+#   Inputs:
+#     $1: DB container
+#     $2: BACKUP_PATH
+#     $3-$5: STATS/FILE_SIZES/FILE_HASHES nameref adları
+#   Effects:
+#     metadata/restore-test.txt yazar ve restore obje sayılarını STATS'e işler.
+#   Failure:
+#     Dump parse edilemezse exit 1; bu durumda yedek güvenilmez kabul edilir.
+verify_restore_dry_run() {
+  local db_container="$1"
+  local backup_path="$2"
+  local stats_name="$3"
+  local sizes_name="$4"
+  local hashes_name="$5"
+  # shellcheck disable=SC2178 # nameref target name is a string; referenced value is an associative array
+  declare -n stats_ref="$stats_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n sizes_ref="$sizes_name"
+  # shellcheck disable=SC2178 # nameref target names are strings; referenced values are associative arrays
+  declare -n hashes_ref="$hashes_name"
+
+  step "Restore dry-run testi"
+
+  local pgdump="${backup_path}/database/full-cluster.dump.zst"
+  local restore_test="${backup_path}/metadata/restore-test.txt"
+
+  info "  pg_restore --list ile dump parse ediliyor..."
+
+  if zstd -dc "$pgdump" 2> /dev/null | docker exec -i "$db_container" \
+    pg_restore --list 2> /dev/null > "$restore_test"; then
+    local obj_count
+    obj_count=$(wc -l < "$restore_test" | xargs)
+
+    if ((obj_count < 10)); then
+      err "  Dump çok az obje içeriyor (${obj_count}) — bozuk olabilir!"
+      exit 1
+    fi
+
+    local schemas_in_dump tables_in_dump funcs_in_dump
+    schemas_in_dump=$({ grep -cE 'SCHEMA - ' "$restore_test" 2> /dev/null || true; } | head -1)
+    schemas_in_dump=${schemas_in_dump:-0}
+    tables_in_dump=$({ grep -cE 'TABLE - ' "$restore_test" 2> /dev/null || true; } | head -1)
+    tables_in_dump=${tables_in_dump:-0}
+    funcs_in_dump=$({ grep -cE 'FUNCTION - ' "$restore_test" 2> /dev/null || true; } | head -1)
+    funcs_in_dump=${funcs_in_dump:-0}
+
+    stats_ref["restore_objects"]="$obj_count"
+    stats_ref["restore_schemas"]="$schemas_in_dump"
+    stats_ref["restore_tables"]="$tables_in_dump"
+    stats_ref["restore_functions"]="$funcs_in_dump"
+
+    record_file_metadata "metadata/restore-test.txt" "$restore_test" "$sizes_name" "$hashes_name"
+
+    ok "  ${obj_count} obje (${schemas_in_dump} schema, ${tables_in_dump} table, ${funcs_in_dump} function)"
+    ok "  Dump ${GRN}restore edilebilir${R}"
+  else
+    err "  pg_restore --list başarısız — DUMP BOZUK!"
+    exit 1
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Sıkıştırılmış SQL dump'ın boş veya yanlış formatta olmadığını hızlıca doğrular.
+#   Inputs:
+#     $1: .sql.zst dosyası
+#   Effects:
+#     Dosya sistemi değişmez; zstd ile geçici stream okur.
+#   Returns:
+#     0: SQL'e benzeyen içerik bulundu
+#     1: dosya açılamadı, boş veya SQL'e benzemiyor
 verify_sql_zst() {
   local file="$1"
   local content
-  content=$(zstd -dc "$file" 2>/dev/null | head -30) || return 1
+  content=$(zstd -dc "$file" 2> /dev/null | head -30) || return 1
 
   [[ -z "$content" ]] && return 1
   echo "$content" | grep -qE '^(--|SET|CREATE|COPY|GRANT|ALTER|BEGIN|INSERT|\\)'
 }
 
-# pg_dump custom format dosyasını doğrula (magic bytes: PGDMP)
+# Contract:
+#   Purpose:
+#     pg_dump custom format dosyasını magic bytes ile doğrular (PGDMP).
+#   Inputs:
+#     $1: full-cluster.dump.zst
+#   Effects:
+#     mktemp ile geçici dosya oluşturur ve fonksiyon içinde siler.
+#   Returns:
+#     0: PGDMP magic bytes bulundu
+#     1: zstd açılamadı veya format custom pg_dump değil
 verify_pgdump_zst() {
   local file="$1"
   local tmp magic
   tmp=$(mktemp) || return 1
   # pipefail sorunu: head broken pipe error veriyor, || true ekle
-  zstd -dc "$file" 2>/dev/null | head -c 5 > "$tmp" 2>/dev/null || true
-  magic=$(cat "$tmp" 2>/dev/null)
+  zstd -dc "$file" 2> /dev/null | head -c 5 > "$tmp" 2> /dev/null || true
+  magic=$(cat "$tmp" 2> /dev/null)
   rm -f "$tmp"
   [[ -n "$magic" && "$magic" == "PGDMP" ]]
 }
@@ -157,14 +882,17 @@ verify_pgdump_zst() {
 check_requirements() {
   local missing=()
   for cmd in docker zstd tar curl bc; do
-    command -v "$cmd" >/dev/null || missing+=("$cmd")
+    command -v "$cmd" > /dev/null || missing+=("$cmd")
   done
-  if (( ${#missing[@]} > 0 )); then
+  if ((${#missing[@]} > 0)); then
     err "Eksik komutlar: ${missing[*]}"
     err "Kurulum: sudo apt install ${missing[*]}"
     exit 1
   fi
-  command -v supabase >/dev/null || { err "supabase CLI bulunamadı"; exit 1; }
+  command -v supabase > /dev/null || {
+    err "supabase CLI bulunamadı"
+    exit 1
+  }
 }
 
 # ╔═══════════════════════════════════════════════════════════════════╗
@@ -174,13 +902,16 @@ check_requirements() {
 cmd_list() {
   banner "Mevcut Yedekler"
   info "Dizin: ${B}${OUTPUT_DIR}${R}"
-  [[ ! -d "$OUTPUT_DIR" ]] && { info "Yedek dizini henüz yok"; return; }
+  [[ ! -d "$OUTPUT_DIR" ]] && {
+    info "Yedek dizini henüz yok"
+    return
+  }
 
   shopt -s nullglob
   local backups=("${OUTPUT_DIR}"/*/)
   shopt -u nullglob
 
-  if (( ${#backups[@]} == 0 )); then
+  if ((${#backups[@]} == 0)); then
     info "Yedek bulunamadı"
     return
   fi
@@ -191,10 +922,11 @@ cmd_list() {
 
   local total_size=0 count=0
   for backup in "${backups[@]}"; do
-    local name=$(basename "$backup")
-    local size=$(du -sb "$backup" 2>/dev/null | awk '{print $1}')
-    total_size=$(( total_size + size ))
-    count=$(( count + 1 ))
+    local name size
+    name=$(basename "$backup")
+    size=$(du -sb "$backup" 2> /dev/null | awk '{print $1}')
+    total_size=$((total_size + size))
+    count=$((count + 1))
 
     local components=""
     [[ -d "${backup}database" ]] && components+="${CYN}db${R} "
@@ -202,12 +934,12 @@ cmd_list() {
     [[ -d "${backup}functions" ]] && components+="${CYN}fn${R} "
     [[ -d "${backup}config" ]] && components+="${CYN}cfg${R} "
 
-    printf "  %-22s  %12s  %s\n" "$name" "$(human_size $size)" "$components"
+    printf "  %-22s  %12s  %s\n" "$name" "$(human_size "$size")" "$components"
   done
 
   echo
   printf "  ${GRY}%s${R}\n" "──────────────────────────────────────────────────────────────"
-  printf "  ${B}TOPLAM:${R} %d yedek, %s\n" "$count" "$(human_size $total_size)"
+  printf "  ${B}TOPLAM:${R} %d yedek, %s\n" "$count" "$(human_size "$total_size")"
 }
 
 # ╔═══════════════════════════════════════════════════════════════════╗
@@ -228,7 +960,7 @@ verify_backup_dir() {
     return 1
   fi
 
-  if ! file "$manifest" 2>/dev/null | grep -q "JSON"; then
+  if ! file "$manifest" 2> /dev/null | grep -q "JSON"; then
     err "manifest.json geçerli JSON değil"
     return 1
   fi
@@ -238,9 +970,9 @@ verify_backup_dir() {
     local f="${target}/database/${sql}.sql.zst"
     [[ ! -f "$f" ]] && continue
 
-    if ! zstd -t "$f" 2>/dev/null; then
+    if ! zstd -t "$f" 2> /dev/null; then
       err "  ${sql}.sql.zst: zstd bütünlüğü BOZUK"
-      errors=$((errors+1))
+      errors=$((errors + 1))
       continue
     fi
 
@@ -254,12 +986,12 @@ verify_backup_dir() {
   # pg_dump custom format
   local pgdump="${target}/database/full-cluster.dump.zst"
   if [[ -f "$pgdump" ]]; then
-    if ! zstd -t "$pgdump" 2>/dev/null; then
+    if ! zstd -t "$pgdump" 2> /dev/null; then
       err "  full-cluster.dump.zst: zstd bozuk"
-      errors=$((errors+1))
+      errors=$((errors + 1))
     elif ! verify_pgdump_zst "$pgdump"; then
       err "  full-cluster.dump.zst: pg_dump magic bytes yok"
-      errors=$((errors+1))
+      errors=$((errors + 1))
     else
       $quiet_mode || ok "  full-cluster.dump.zst ${GRN}geçerli${R}"
     fi
@@ -268,16 +1000,18 @@ verify_backup_dir() {
   # tar.zst arşivleri
   for arch in "${target}/storage/storage-volume.tar.zst" "${target}/functions/functions.tar.zst"; do
     [[ ! -f "$arch" ]] && continue
-    local name=$(basename "$arch")
+    local name
+    name=$(basename "$arch")
 
-    if ! zstd -t "$arch" 2>/dev/null; then
+    if ! zstd -t "$arch" 2> /dev/null; then
       err "  ${name}: zstd bozuk"
-      errors=$((errors+1))
-    elif ! zstd -dc "$arch" 2>/dev/null | tar -tf - >/dev/null 2>&1; then
+      errors=$((errors + 1))
+    elif ! zstd -dc "$arch" 2> /dev/null | tar -tf - > /dev/null 2>&1; then
       err "  ${name}: tar bozuk"
-      errors=$((errors+1))
+      errors=$((errors + 1))
     else
-      local n=$(zstd -dc "$arch" 2>/dev/null | tar -tf - 2>/dev/null | wc -l)
+      local n
+      n=$(zstd -dc "$arch" 2> /dev/null | tar -tf - 2> /dev/null | wc -l)
       $quiet_mode || ok "  ${name} ${GRN}geçerli${R} ${D}(${n} dosya)${R}"
     fi
   done
@@ -287,17 +1021,25 @@ verify_backup_dir() {
 
 cmd_verify() {
   local target="$VERIFY_PATH"
-  [[ -z "$target" ]] && { err "--verify <yedek-adı> gerekli"; exit 1; }
+  [[ -z "$target" ]] && {
+    err "--verify <yedek-adı> gerekli"
+    exit 1
+  }
 
   if [[ ! -d "$target" ]]; then
-    [[ -d "${OUTPUT_DIR}/${target}" ]] && target="${OUTPUT_DIR}/${target}" || { err "Yedek yok: $target"; exit 1; }
+    if [[ -d "${OUTPUT_DIR}/${target}" ]]; then
+      target="${OUTPUT_DIR}/${target}"
+    else
+      err "Yedek yok: $target"
+      exit 1
+    fi
   fi
 
   banner "Yedek Doğrulanıyor"
   info "Hedef: ${B}$(basename "$target")${R}"
 
   echo
-  detail "$(cat "${target}/manifest.json" 2>/dev/null || echo 'manifest yok')"
+  detail "$(cat "${target}/manifest.json" 2> /dev/null || echo 'manifest yok')"
 
   if verify_backup_dir "$target"; then
     echo
@@ -313,42 +1055,68 @@ cmd_verify() {
 # ║  --prune                                                           ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 
+# Contract:
+#   Purpose:
+#     OUTPUT_DIR altındaki eski yedek klasörlerini yaş eşiğine göre siler.
+#   Inputs:
+#     OLDER_THAN: 30d, 4w, 6m, 1y formatında süre
+#     OUTPUT_DIR: yedek kökü
+#   Effects:
+#     Destructive: eşleşen yedek dizinlerine rm -rf uygular.
+#   Safety:
+#     Silinecek klasörleri listeler ve interaktif onay almadan silmez.
 cmd_prune() {
-  [[ -z "$OLDER_THAN" ]] && { err "--older-than <süre> gerekli (örn: 30d, 4w, 6m)"; exit 1; }
+  [[ -z "$OLDER_THAN" ]] && {
+    err "--older-than <süre> gerekli (örn: 30d, 4w, 6m)"
+    exit 1
+  }
 
   local days
   case "$OLDER_THAN" in
     *d) days="${OLDER_THAN%d}" ;;
-    *w) days=$(( ${OLDER_THAN%w} * 7 )) ;;
-    *m) days=$(( ${OLDER_THAN%m} * 30 )) ;;
-    *y) days=$(( ${OLDER_THAN%y} * 365 )) ;;
-    *)  err "Geçersiz süre: $OLDER_THAN"; exit 1 ;;
+    *w) days=$((${OLDER_THAN%w} * 7)) ;;
+    *m) days=$((${OLDER_THAN%m} * 30)) ;;
+    *y) days=$((${OLDER_THAN%y} * 365)) ;;
+    *)
+      err "Geçersiz süre: $OLDER_THAN"
+      exit 1
+      ;;
   esac
 
   banner "Eski Yedekleri Temizle"
   info "${days} günden eski yedekler aranıyor"
-  [[ ! -d "$OUTPUT_DIR" ]] && { info "Yedek dizini yok"; return; }
+  [[ ! -d "$OUTPUT_DIR" ]] && {
+    info "Yedek dizini yok"
+    return
+  }
 
   local to_delete=()
   while IFS= read -r -d '' dir; do
     to_delete+=("$dir")
-  done < <(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -mtime "+${days}" -print0 2>/dev/null)
+  done < <(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -mtime "+${days}" -print0 2> /dev/null)
 
-  (( ${#to_delete[@]} == 0 )) && { info "Silinecek yedek yok"; return; }
+  ((${#to_delete[@]} == 0)) && {
+    info "Silinecek yedek yok"
+    return
+  }
 
   echo
   warn "Silinecek yedekler:"
   local total=0
   for dir in "${to_delete[@]}"; do
-    local size=$(du -sb "$dir" 2>/dev/null | awk '{print $1}')
-    total=$((total+size))
-    printf "    %s  ${D}(%s)${R}\n" "$(basename "$dir")" "$(human_size $size)"
+    local size
+    size=$(du -sb "$dir" 2> /dev/null | awk '{print $1}')
+    total=$((total + size))
+    printf "    %s  ${D}(%s)${R}\n" "$(basename "$dir")" "$(human_size "$size")"
   done
   echo
-  info "Kurtarılacak: ${B}$(human_size $total)${R}"
+  info "Kurtarılacak: ${B}$(human_size "$total")${R}"
 
   read -rp "${YEL}?${R} Devam edilsin mi? [e/H] " ans
-  [[ "$ans" =~ ^([eE]|[yY])$ ]] || { info "İptal edildi"; exit 0; }
+  [[ "$ans" =~ ^([eE]|[yY])$ ]] || {
+    info "İptal edildi"
+    exit 0
+  }
 
   for dir in "${to_delete[@]}"; do
     rm -rf "$dir"
@@ -360,6 +1128,20 @@ cmd_prune() {
 # ║  --backup (asıl iş)                                                ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 
+# Contract:
+#   Purpose:
+#     Çalışan Supabase stack'ten restore edilebilir tam yedek üretir.
+#   Inputs:
+#     WORKDIR_OVERRIDE: opsiyonel proje dizini
+#     OUTPUT_DIR: yedek kökü
+#   Effects:
+#     OUTPUT_DIR altında timestamp'li yedek klasörü oluşturur.
+#     Docker/Supabase/Postgres komutlarını read-only veya dump amaçlı çağırır.
+#   Guarantees:
+#     Başarılı bitişte manifest.json ve otomatik doğrulama üretir.
+#     Her dosya için sha256 ve boyut manifest'e yazılır.
+#   Failure:
+#     Kritik dump/verify hatasında non-zero exit ile çıkar; kısmi yedek klasörü kalabilir.
 cmd_backup() {
   banner "Supabase Tam Yedekleme"
   info "Başlangıç: ${D}$(date '+%Y-%m-%d %H:%M:%S')${R}"
@@ -369,19 +1151,23 @@ cmd_backup() {
   ok "Tüm bağımlılıklar mevcut"
 
   local WORKDIR
-  WORKDIR=$(detect_workdir) || { err "Supabase projesi bulunamadı (config.toml yok)"; exit 1; }
+  WORKDIR=$(detect_workdir) || {
+    err "Supabase projesi bulunamadı (config.toml yok)"
+    exit 1
+  }
   local PROJECT_ID="${WORKDIR##*/}"
   local DB_CONTAINER="supabase_db_${PROJECT_ID}"
 
-  # Supabase Stack'inin tüm volume'larını yedekle (auto-discovery)
   local VOLUMES=()
-  for vol in $(docker volume ls --format '{{.Name}}' | grep "_${PROJECT_ID}$" 2>/dev/null); do
+  local vol
+  while IFS= read -r vol; do
+    [[ -z "$vol" ]] && continue
     VOLUMES+=("$vol")
-  done
+  done < <(discover_project_volumes "$PROJECT_ID")
 
   info "Proje: ${B}${PROJECT_ID}${R} ${D}(${WORKDIR})${R}"
 
-  if ! (cd "$WORKDIR" && supabase status >/dev/null 2>&1); then
+  if ! (cd "$WORKDIR" && supabase status > /dev/null 2>&1); then
     err "Stack çalışmıyor — önce 'supabase start' yapın"
     exit 1
   fi
@@ -389,396 +1175,49 @@ cmd_backup() {
   ok "Container: ${D}${DB_CONTAINER}${R}"
   ok "Bulunan volume sayısı: ${B}${#VOLUMES[@]}${R} ${D}(${VOLUMES[*]})${R}"
 
-  local TS=$(date +%Y-%m-%d-%H%M%S)
+  local TS
+  TS=$(date +%Y-%m-%d-%H%M%S)
   local BACKUP_PATH="${OUTPUT_DIR}/${TS}"
   mkdir -p "${BACKUP_PATH}"/{database,volumes,functions,config,metadata,security}
 
-  local CLI_VERSION=$(supabase --version 2>/dev/null | head -1 | awk '{print $NF}')
-  local PG_VERSION=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c "SHOW server_version;" 2>/dev/null | xargs)
+  local CLI_VERSION PG_VERSION
+  CLI_VERSION=$(supabase --version 2> /dev/null | head -1 | awk '{print $NF}')
+  PG_VERSION=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c "SHOW server_version;" 2> /dev/null | xargs)
 
+  # shellcheck disable=SC2034 # read through nameref helper functions
   declare -A FILE_SIZES FILE_HASHES
   declare -A STATS
+  # shellcheck disable=SC2034 # read through nameref helper functions
   declare -a SECURITY_WARNINGS=()
 
-  # ───── 0. Pre-backup kalite kontrolleri ─────
-  step "Pre-backup: Lint + Güvenlik"
-
-  # supabase db lint — schema/typing hataları
-  info "  supabase db lint --local..."
-  local lint_output
-  if lint_output=$(cd "$WORKDIR" && supabase db lint --local --level warning 2>&1); then
-    # "No schema errors found" → temiz; başka bir şey varsa gerçek uyarı
-    if echo "$lint_output" | grep -qE '^(WARNING|ERROR|warning:|error:|Level: (warning|error))'; then
-      warn "  Lint uyarıları var:"
-      echo "$lint_output" | head -10 | sed 's/^/      /'
-      SECURITY_WARNINGS+=("lint: schema uyarıları var")
-    else
-      ok "  Lint temiz"
-    fi
-  else
-    warn "  Lint çalıştırılamadı (atlanıyor)"
-  fi
-
-  # RLS bypass kontrolü — public şemadaki RLS'siz tablolar
-  info "  RLS kontrolü (public şema)..."
-  local rls_missing
-  rls_missing=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
-    "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND rowsecurity=false;" 2>/dev/null | xargs || echo 0)
-  if [[ "$rls_missing" -gt 0 ]]; then
-    warn "  ${rls_missing} public tabloda RLS kapalı"
-    SECURITY_WARNINGS+=("rls: ${rls_missing} public tablo RLS'siz")
-  else
-    ok "  Tüm public tablolarda RLS açık"
-  fi
-
-  # auth.role() deprecated kullanımı
-  info "  Deprecated auth.role() kontrolü..."
-  local deprecated_count
-  deprecated_count=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
-    "SELECT count(*) FROM pg_policies WHERE qual LIKE '%auth.role()%' OR with_check LIKE '%auth.role()%';" 2>/dev/null | xargs || echo 0)
-  if [[ "$deprecated_count" -gt 0 ]]; then
-    warn "  ${deprecated_count} policy'de deprecated auth.role() kullanımı"
-    SECURITY_WARNINGS+=("deprecated: ${deprecated_count} policy auth.role() kullanıyor")
-  else
-    ok "  Deprecated kullanım yok"
-  fi
-
-  # WITH CHECK eksik UPDATE policy'leri
-  info "  WITH CHECK eksikliği kontrolü..."
-  local missing_check
-  missing_check=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
-    "SELECT count(*) FROM pg_policies WHERE cmd='UPDATE' AND with_check IS NULL;" 2>/dev/null | xargs || echo 0)
-  if [[ "$missing_check" -gt 0 ]]; then
-    warn "  ${missing_check} UPDATE policy'sinde WITH CHECK eksik"
-    SECURITY_WARNINGS+=("with_check: ${missing_check} UPDATE policy WITH CHECK'siz")
-  else
-    ok "  Tüm UPDATE policy'ler WITH CHECK içeriyor"
-  fi
-
-  # SECURITY DEFINER public schema'da
-  info "  SECURITY DEFINER public schema kontrolü..."
-  local sec_definer
-  sec_definer=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
-    "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef=true;" 2>/dev/null | xargs || echo 0)
-  if [[ "$sec_definer" -gt 0 ]]; then
-    warn "  ${sec_definer} adet SECURITY DEFINER fonksiyon public şemada"
-    SECURITY_WARNINGS+=("sec_definer: ${sec_definer} public SECURITY DEFINER func")
-  else
-    ok "  Public şemada SECURITY DEFINER fonksiyon yok"
-  fi
-
-  # Security report'u dosyaya yaz
-  local sec_report="${BACKUP_PATH}/security/audit.txt"
-  {
-    echo "# Supabase Güvenlik Denetimi — ${TS}"
-    echo "# Kaynak: backup öncesi otomatik kontrol"
-    echo ""
-    echo "## Bulgular"
-    if (( ${#SECURITY_WARNINGS[@]} == 0 )); then
-      echo "Hiç uyarı yok — sistem temiz."
-    else
-      printf -- "- %s\n" "${SECURITY_WARNINGS[@]}"
-    fi
-    echo ""
-    echo "## RLS'siz public tablolar"
-    docker exec "$DB_CONTAINER" psql -U postgres -c \
-      "SELECT schemaname, tablename FROM pg_tables WHERE schemaname='public' AND rowsecurity=false;" 2>/dev/null || true
-    echo ""
-    echo "## Deprecated auth.role() kullanan policy'ler"
-    docker exec "$DB_CONTAINER" psql -U postgres -c \
-      "SELECT schemaname, tablename, policyname FROM pg_policies WHERE qual LIKE '%auth.role()%' OR with_check LIKE '%auth.role()%';" 2>/dev/null || true
-  } > "$sec_report" 2>/dev/null
-
-  FILE_SIZES["security/audit.txt"]=$(file_size "$sec_report")
-  FILE_HASHES["security/audit.txt"]=$(file_hash "$sec_report")
-
-  # ───── 1. Database: Resmi yol (supabase db dump) ─────
-  step "Database: Resmi dump (taşınabilir)"
-
-  pushd "$WORKDIR" >/dev/null
-
-  for component in roles schema data; do
-    local out="${BACKUP_PATH}/database/${component}.sql.zst"
-    info "  ${component}.sql.zst yazılıyor..."
-
-    local flags=()
-    case "$component" in
-      roles)  flags=(--role-only) ;;
-      schema) flags=() ;;
-      data)   flags=(--data-only --use-copy) ;;
-    esac
-
-    if supabase db dump --local "${flags[@]}" 2>/dev/null | zstd -q -o "$out"; then
-      local size=$(file_size "$out")
-
-      if ! verify_sql_zst "$out"; then
-        err "  ${component} dump boş veya geçersiz — dump başarısız!"
-        popd >/dev/null; exit 1
-      fi
-
-      FILE_SIZES["database/${component}.sql.zst"]=$size
-      FILE_HASHES["database/${component}.sql.zst"]=$(file_hash "$out")
-      ok "  ${component}.sql.zst ${D}($(human_size $size))${R}"
-    else
-      err "  ${component} dump başarısız"
-      popd >/dev/null; exit 1
-    fi
-  done
-  popd >/dev/null
-
-  # ───── 2. Database: Raw pg_dump (her şey dahil) ─────
-  step "Database: Raw pg_dump (tam yedek)"
-
-  local out="${BACKUP_PATH}/database/full-cluster.dump.zst"
-  info "  pg_dump --format=custom (auth, storage, public, hepsi)..."
-
-  if docker exec "$DB_CONTAINER" pg_dump -U postgres -d postgres \
-       --format=custom --no-owner --no-privileges --compress=0 2>/dev/null \
-     | zstd -q -o "$out"; then
-    local size=$(file_size "$out")
-    FILE_SIZES["database/full-cluster.dump.zst"]=$size
-    FILE_HASHES["database/full-cluster.dump.zst"]=$(file_hash "$out")
-    ok "  full-cluster.dump.zst ${D}($(human_size $size))${R}"
-  else
-    err "  pg_dump başarısız"
-    exit 1
-  fi
-
-  # İstatistik: dump içinde kaç tablo, row?
-  info "  İçerik analizi..."
-  STATS["public_tables"]=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c \
-    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null | xargs || echo 0)
-  STATS["auth_users"]=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c \
-    "SELECT count(*) FROM auth.users;" 2>/dev/null | xargs || echo 0)
-  STATS["storage_buckets"]=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c \
-    "SELECT count(*) FROM storage.buckets;" 2>/dev/null | xargs || echo 0)
-  STATS["storage_objects"]=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c \
-    "SELECT count(*) FROM storage.objects;" 2>/dev/null | xargs || echo 0)
-  STATS["total_schemas"]=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c \
-    "SELECT count(*) FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name NOT IN ('information_schema');" 2>/dev/null | xargs || echo 0)
-
-  ok "  ${STATS[total_schemas]} kullanıcı şeması, ${STATS[public_tables]} public tablo"
-  ok "  ${STATS[auth_users]} kullanıcı (auth.users)"
-  ok "  ${STATS[storage_buckets]} bucket, ${STATS[storage_objects]} dosya kaydı (storage)"
-
-  # ───── 3. Docker Volumes (tüm Supabase volume'ları) ─────
-  step "Docker Volumes"
-
-  if (( ${#VOLUMES[@]} == 0 )); then
-    info "  Hiç volume bulunamadı — atlanıyor"
-    rmdir "${BACKUP_PATH}/volumes" 2>/dev/null || true
-  else
-    for vol in "${VOLUMES[@]}"; do
-      # Volume isminden kısa ad çıkar: supabase_storage_otonorm → storage
-      local short_name
-      short_name=$(echo "$vol" | sed -E "s/^supabase_(.+)_${PROJECT_ID}$/\1/")
-      local out="${BACKUP_PATH}/volumes/${short_name}.tar.zst"
-      info "  ${B}${vol}${R} → ${short_name}.tar.zst arşivleniyor..."
-
-      if docker run --rm -v "${vol}:/source:ro" alpine:latest \
-           tar -cf - -C /source . 2>/dev/null | zstd -q -o "$out" 2>/dev/null; then
-        local size=$(file_size "$out")
-        FILE_SIZES["volumes/${short_name}.tar.zst"]=$size
-        FILE_HASHES["volumes/${short_name}.tar.zst"]=$(file_hash "$out")
-
-        local file_count
-        file_count=$(zstd -dc "$out" 2>/dev/null | tar -tf - 2>/dev/null | wc -l)
-        STATS["volume_${short_name}_files"]="$file_count"
-        ok "    ${short_name}.tar.zst ${D}($(human_size $size), ${file_count} öğe)${R}"
-      else
-        warn "    ${short_name} volume yedeklenemedi (boş veya erişim sorunu)"
-        rm -f "$out" 2>/dev/null || true
-      fi
-    done
-
-    # Storage files toplam sayısı (backward-compat manifest için)
-    STATS["storage_files"]="${STATS[volume_storage_files]:-0}"
-  fi
-
-  # ───── 4. Metadata snapshot (services, extensions, migrations) ─────
-  step "Metadata snapshot"
-
-  # Service versions — restore'da aynı versiyonlar gerekiyor
-  local svc_file="${BACKUP_PATH}/metadata/services.txt"
-  info "  Service versions..."
-  if (cd "$WORKDIR" && supabase services list 2>/dev/null) > "$svc_file"; then
-    FILE_SIZES["metadata/services.txt"]=$(file_size "$svc_file")
-    FILE_HASHES["metadata/services.txt"]=$(file_hash "$svc_file")
-    local svc_count
-    svc_count=$({ grep -cE '^[[:space:]]+supabase/|^[[:space:]]+postgrest/' "$svc_file" 2>/dev/null || true; } | head -1)
-    svc_count=${svc_count:-0}
-    STATS["services"]="$svc_count"
-    ok "  services.txt ${D}(${svc_count} servis)${R}"
-  else
-    warn "  Service versions alınamadı"
-  fi
-
-  # Postgres extensions — version uyumsuzluğu kritik
-  local ext_file="${BACKUP_PATH}/metadata/extensions.tsv"
-  info "  Postgres extensions..."
-  if docker exec "$DB_CONTAINER" psql -U postgres -At -F$'\t' -c \
-       "SELECT extname, extversion FROM pg_extension ORDER BY extname;" 2>/dev/null > "$ext_file"; then
-    FILE_SIZES["metadata/extensions.tsv"]=$(file_size "$ext_file")
-    FILE_HASHES["metadata/extensions.tsv"]=$(file_hash "$ext_file")
-    local ext_count=$(wc -l < "$ext_file" 2>/dev/null | xargs)
-    STATS["extensions"]="$ext_count"
-    ok "  extensions.tsv ${D}(${ext_count} extension)${R}"
-  else
-    warn "  Extensions alınamadı"
-  fi
-
-  # Migration history
-  local mig_file="${BACKUP_PATH}/metadata/migrations.txt"
-  info "  Migration history..."
-  if (cd "$WORKDIR" && supabase migration list --local 2>/dev/null) > "$mig_file"; then
-    FILE_SIZES["metadata/migrations.txt"]=$(file_size "$mig_file")
-    FILE_HASHES["metadata/migrations.txt"]=$(file_hash "$mig_file")
-    local mig_count
-    mig_count=$({ grep -cE '^[[:space:]]+[0-9]{14}' "$mig_file" 2>/dev/null || true; } | head -1)
-    mig_count=${mig_count:-0}
-    STATS["migrations"]="$mig_count"
-    ok "  migrations.txt ${D}(${mig_count} migration)${R}"
-  else
-    warn "  Migration list alınamadı"
-  fi
-
-  # ───── 5. Edge Functions ─────
-  step "Edge Functions"
-
-  local fn_dir="${WORKDIR}/supabase/functions"
-  if [[ -d "$fn_dir" ]] && [[ -n "$(ls -A "$fn_dir" 2>/dev/null)" ]]; then
-    local out="${BACKUP_PATH}/functions/functions.tar.zst"
-    info "  Functions arşivleniyor..."
-    if tar -cf - -C "${WORKDIR}/supabase" functions 2>/dev/null | zstd -q -o "$out"; then
-      local size=$(file_size "$out")
-      FILE_SIZES["functions/functions.tar.zst"]=$size
-      FILE_HASHES["functions/functions.tar.zst"]=$(file_hash "$out")
-      local count=$(find "$fn_dir" -type d -mindepth 1 -maxdepth 1 | wc -l)
-      STATS["function_count"]="$count"
-      ok "  functions.tar.zst ${D}($(human_size $size), ${count} function)${R}"
-    else
-      warn "  Functions yedeklenemedi"
-      rmdir "${BACKUP_PATH}/functions" 2>/dev/null || true
-    fi
-  else
-    info "  Function bulunamadı — atlanıyor"
-    rmdir "${BACKUP_PATH}/functions" 2>/dev/null || true
-  fi
-
-  # ───── 5. Config ─────
-  step "Config Dosyaları"
-
-  cp "${WORKDIR}/supabase/config.toml" "${BACKUP_PATH}/config/config.toml"
-  FILE_SIZES["config/config.toml"]=$(file_size "${BACKUP_PATH}/config/config.toml")
-  FILE_HASHES["config/config.toml"]=$(file_hash "${BACKUP_PATH}/config/config.toml")
-  ok "  config.toml"
-
-  if [[ -f "${WORKDIR}/.env" ]]; then
-    cp "${WORKDIR}/.env" "${BACKUP_PATH}/config/env.txt"
-    chmod 600 "${BACKUP_PATH}/config/env.txt"
-    FILE_SIZES["config/env.txt"]=$(file_size "${BACKUP_PATH}/config/env.txt")
-    FILE_HASHES["config/env.txt"]=$(file_hash "${BACKUP_PATH}/config/env.txt")
-    ok "  env.txt ${YEL}(hassas — chmod 600)${R}"
-  fi
-
-  # ───── 7. Restore dry-run testi (pg_dump'ı parse et) ─────
-  step "Restore dry-run testi"
-
-  local pgdump="${BACKUP_PATH}/database/full-cluster.dump.zst"
-  local restore_test="${BACKUP_PATH}/metadata/restore-test.txt"
-
-  info "  pg_restore --list ile dump parse ediliyor..."
-
-  # Decompress + pg_restore --list ile dump'taki objeleri listele
-  if zstd -dc "$pgdump" 2>/dev/null | docker exec -i "$DB_CONTAINER" \
-       pg_restore --list 2>/dev/null > "$restore_test"; then
-    local obj_count
-    obj_count=$(wc -l < "$restore_test" | xargs)
-
-    if (( obj_count < 10 )); then
-      err "  Dump çok az obje içeriyor (${obj_count}) — bozuk olabilir!"
-      exit 1
-    fi
-
-    # Schema'ları say
-    local schemas_in_dump tables_in_dump funcs_in_dump
-    schemas_in_dump=$({ grep -cE 'SCHEMA - ' "$restore_test" 2>/dev/null || true; } | head -1); schemas_in_dump=${schemas_in_dump:-0}
-    tables_in_dump=$({ grep -cE 'TABLE - ' "$restore_test" 2>/dev/null || true; } | head -1); tables_in_dump=${tables_in_dump:-0}
-    funcs_in_dump=$({ grep -cE 'FUNCTION - ' "$restore_test" 2>/dev/null || true; } | head -1); funcs_in_dump=${funcs_in_dump:-0}
-
-    STATS["restore_objects"]="$obj_count"
-    STATS["restore_schemas"]="$schemas_in_dump"
-    STATS["restore_tables"]="$tables_in_dump"
-    STATS["restore_functions"]="$funcs_in_dump"
-
-    FILE_SIZES["metadata/restore-test.txt"]=$(file_size "$restore_test")
-    FILE_HASHES["metadata/restore-test.txt"]=$(file_hash "$restore_test")
-
-    ok "  ${obj_count} obje (${schemas_in_dump} schema, ${tables_in_dump} table, ${funcs_in_dump} function)"
-    ok "  Dump ${GRN}restore edilebilir${R}"
-  else
-    err "  pg_restore --list başarısız — DUMP BOZUK!"
-    exit 1
-  fi
+  run_security_audit "$WORKDIR" "$DB_CONTAINER" "$TS" "$BACKUP_PATH" SECURITY_WARNINGS FILE_SIZES FILE_HASHES
+  dump_portable_sql "$WORKDIR" "$BACKUP_PATH" FILE_SIZES FILE_HASHES
+  dump_full_cluster "$DB_CONTAINER" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
+  archive_volumes "$PROJECT_ID" "$BACKUP_PATH" VOLUMES STATS FILE_SIZES FILE_HASHES
+  snapshot_metadata "$WORKDIR" "$DB_CONTAINER" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
+  archive_functions "$WORKDIR" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
+  copy_config_files "$WORKDIR" "$BACKUP_PATH" FILE_SIZES FILE_HASHES
+  verify_restore_dry_run "$DB_CONTAINER" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
 
   # ───── 8. Manifest ─────
   step "Manifest"
 
   local manifest="${BACKUP_PATH}/manifest.json"
-  {
-    echo "{"
-    echo "  \"backup_version\": \"3.0\","
-    echo "  \"strategy\": \"hybrid+metadata+security\","
-    echo "  \"timestamp\": \"${TS}\","
-    echo "  \"created_at\": \"$(date -Iseconds)\","
-    echo "  \"hostname\": \"$(hostname)\","
-    echo "  \"project_id\": \"${PROJECT_ID}\","
-    echo "  \"workdir\": \"${WORKDIR}\","
-    echo "  \"supabase_cli\": \"${CLI_VERSION}\","
-    echo "  \"postgres_version\": \"${PG_VERSION}\","
-    echo "  \"volumes_backed_up\": ["
-    local vfirst=true
-    for v in "${VOLUMES[@]}"; do
-      $vfirst && vfirst=false || echo ","
-      printf "    \"%s\"" "$v"
-    done
-    echo ""
-    echo "  ],"
-    echo "  \"stats\": {"
-    echo "    \"user_schemas\": ${STATS[total_schemas]:-0},"
-    echo "    \"public_tables\": ${STATS[public_tables]:-0},"
-    echo "    \"auth_users\": ${STATS[auth_users]:-0},"
-    echo "    \"storage_buckets\": ${STATS[storage_buckets]:-0},"
-    echo "    \"storage_objects\": ${STATS[storage_objects]:-0},"
-    echo "    \"storage_files\": ${STATS[storage_files]:-0},"
-    echo "    \"extensions\": ${STATS[extensions]:-0},"
-    echo "    \"migrations\": ${STATS[migrations]:-0},"
-    echo "    \"restore_objects\": ${STATS[restore_objects]:-0},"
-    echo "    \"restore_schemas\": ${STATS[restore_schemas]:-0},"
-    echo "    \"restore_tables\": ${STATS[restore_tables]:-0},"
-    echo "    \"restore_functions\": ${STATS[restore_functions]:-0},"
-    echo "    \"functions\": ${STATS[function_count]:-0}"
-    echo "  },"
-    echo "  \"security_warnings\": ["
-    local sfirst=true
-    for w in "${SECURITY_WARNINGS[@]}"; do
-      $sfirst && sfirst=false || echo ","
-      printf "    \"%s\"" "$w"
-    done
-    echo ""
-    echo "  ],"
-    echo "  \"files\": {"
-    local first=true
-    for key in "${!FILE_HASHES[@]}"; do
-      $first && first=false || echo ","
-      printf "    \"%s\": {\"size\": %d, \"sha256\": \"%s\"}" \
-        "$key" "${FILE_SIZES[$key]}" "${FILE_HASHES[$key]}"
-    done
-    echo ""
-    echo "  }"
-    echo "}"
-  } > "$manifest"
-  ok "  manifest.json ${D}($(human_size $(file_size "$manifest")))${R}"
+  write_manifest \
+    "$manifest" \
+    "$TS" \
+    "$PROJECT_ID" \
+    "$WORKDIR" \
+    "$CLI_VERSION" \
+    "$PG_VERSION" \
+    VOLUMES \
+    STATS \
+    SECURITY_WARNINGS \
+    FILE_SIZES \
+    FILE_HASHES
+  local manifest_size
+  manifest_size=$(file_size "$manifest")
+  ok "  manifest.json ${D}($(human_size "$manifest_size"))${R}"
 
   # ───── 9. Otomatik doğrulama ─────
   if verify_backup_dir "$BACKUP_PATH" "$QUIET"; then
@@ -789,41 +1228,46 @@ cmd_backup() {
   fi
 
   # ───── 8. Bitiş özeti ─────
-  local total_bytes=$(du -sb "$BACKUP_PATH" 2>/dev/null | awk '{print $1}')
+  local total_bytes
+  total_bytes=$(du -sb "$BACKUP_PATH" 2> /dev/null | awk '{print $1}')
 
   if ! $QUIET; then
     echo
     echo "${BG_GRN}  YEDEK TAMAMLANDI  ${R}"
     echo
     echo "  ${B}Konum:${R} ${BACKUP_PATH}"
-    echo "  ${B}Boyut:${R} $(human_size $total_bytes)"
+    echo "  ${B}Boyut:${R} $(human_size "$total_bytes")"
     echo
     echo "  ${B}İçerik:${R}"
     echo "    ${CYN}●${R} ${STATS[public_tables]:-0} public tablo, ${STATS[auth_users]:-0} kullanıcı"
     echo "    ${CYN}●${R} ${STATS[storage_buckets]:-0} bucket / ${STATS[storage_objects]:-0} dosya kaydı"
-    [[ "${STATS[storage_files]:-0}" -gt 0 ]] && \
+    [[ "${STATS[storage_files]:-0}" -gt 0 ]] &&
       echo "    ${CYN}●${R} ${STATS[storage_files]} dosya (storage volume)"
-    [[ "${STATS[function_count]:-0}" -gt 0 ]] && \
+    [[ "${STATS[function_count]:-0}" -gt 0 ]] &&
       echo "    ${CYN}●${R} ${STATS[function_count]} edge function"
     echo
     echo "  ${B}Dosyalar:${R}"
     for key in $(echo "${!FILE_SIZES[@]}" | tr ' ' '\n' | sort); do
-      printf "    ${GRY}%-40s${R} ${D}%10s${R}\n" "$key" "$(human_size ${FILE_SIZES[$key]})"
+      printf "    ${GRY}%-40s${R} ${D}%10s${R}\n" "$key" "$(human_size "${FILE_SIZES[$key]}")"
     done
     echo
   else
     # Quiet modda sadece tek satır özet
-    echo "${GRN}✓${R} Yedek alındı: ${B}${BACKUP_PATH}${R} ${D}($(human_size $total_bytes))${R}"
+    echo "${GRN}✓${R} Yedek alındı: ${B}${BACKUP_PATH}${R} ${D}($(human_size "$total_bytes"))${R}"
   fi
 }
 
-# ╔═══════════════════════════════════════════════════════════════════╗
-# ║  ROUTER                                                            ║
-# ╚═══════════════════════════════════════════════════════════════════╝
+main() {
+  parse_args "$@"
 
-case "$MODE" in
-  backup) cmd_backup ;;
-  list)   cmd_list ;;
-  verify) cmd_verify ;;
-  prune)  cmd_prune ;;
-esac
+  case "$MODE" in
+    backup) cmd_backup ;;
+    list) cmd_list ;;
+    verify) cmd_verify ;;
+    prune) cmd_prune ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

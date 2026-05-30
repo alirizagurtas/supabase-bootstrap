@@ -1,460 +1,862 @@
 #!/usr/bin/env bash
 #
-# supabase-update.sh — Supabase CLI upgrade + stack yönetimi.
+# supabase-update.sh - Supabase CLI upgrade + stack management.
 #
-# VARSAYILAN davranış:
-#   1. supabase-backup.sh ile tam yedek alınır
-#   2. Stack DURDURULAMA (data korunur)
-#   3. .deb paketi kurulur
-#   4. Stack yeniden başlatılır (eski data yerinde gelir)
+# Agent contract:
+#   Purpose:
+#     Aktif Supabase CLI binary'sini hedef release'e yükseltir ve gerekiyorsa local stack'i korumalı şekilde yönetir.
+#   Workflow:
+#     1. Helper scriptler ve mevcut CLI tespit edilir.
+#     2. Hedef release çözülür.
+#     3. Proje/stack durumu belirlenir.
+#     4. Gerekiyorsa backup alınır ve stack durdurulur.
+#     5. .deb paketi indirilir, kurulur ve aktif binary doğrulanır.
+#     6. Gerekiyorsa stack başlatılır, health check ve restore-after yapılır.
+#   Safety:
+#     Normal mod data volume'u korur.
+#     --reset destructive moddur; DB volume'u silen `supabase stop --no-backup` çağırır.
+#     --no-backup risklidir; interaktif onay veya -y gerektirir.
+#   Machine-readable contract:
+#     [STEP]/[OK]/[WARN]/[FAIL] log seviyeleri agent/test parser için kararlı tutulur.
 #
-# Kullanım:
-#   supabase-update                       normal yükseltme (data korunur)
-#   supabase-update --reset               DATA SİLEREK temiz yükseltme (yedek alınır)
-#   supabase-update --no-backup           yedek atla (riskli — onay ister)
-#   supabase-update --no-start            yükseltme sonrası stack'i başlatma
-#   supabase-update --force               aynı sürüm bile olsa yeniden kur
-#   supabase-update --tag v2.99.0         belirli sürüme indir/dön
-#   supabase-update --restore <yedek-id>  upgrade YERİNE: yedeği restore et
-#   supabase-update --restore-after <id>  upgrade SONRASI: o yedeği restore et
-#   supabase-update -y                    tüm onaylara EVET (CI)
-#   supabase-update --workdir <yol>       proje dizinini belirt
+# Default flow:
+#   1. Take a backup with supabase-backup.sh
+#   2. Stop the stack while preserving data
+#   3. Install the target Supabase CLI .deb package
+#   4. Restart and verify the stack
+#
+# Usage:
+#   supabase-update                       normal upgrade, data preserved
+#   supabase-update --reset               destructive clean upgrade, backup first
+#   supabase-update --no-backup           skip backup, requires confirmation
+#   supabase-update --no-start            do not start stack after upgrade
+#   supabase-update --force               reinstall even when version is current
+#   supabase-update --tag v2.99.0         install a specific version
+#   supabase-update --restore <backup-id> restore only, skip upgrade
+#   supabase-update --restore-after <id>  restore after upgrade
+#   supabase-update -y                    answer yes to prompts
+#   supabase-update --workdir <path>      set Supabase project directory
 #   supabase-update --help
 #
-# Bağımlılık: supabase-backup.sh, supabase-restore.sh
+# Dependencies: supabase-backup.sh, supabase-restore.sh
 
-set -euo pipefail
+set -Eeuo pipefail
+IFS=$'\n\t'
 
-# ───────────── Renkler ─────────────
-# Terminal detection'ı log redirection ÖNCESİ yap!
-if [[ -t 1 ]]; then
-  R=$'\033[0m'; B=$'\033[1m'; D=$'\033[2m'
-  RED=$'\033[38;5;203m'; GRN=$'\033[38;5;120m'; YEL=$'\033[38;5;221m'
-  BLU=$'\033[38;5;111m'; MAG=$'\033[38;5;177m'; CYN=$'\033[38;5;87m'
-  GRY=$'\033[38;5;245m'
-  BG_BLU=$'\033[48;5;24m\033[38;5;255m'
-  BG_GRN=$'\033[48;5;22m\033[38;5;255m'
-  BG_RED=$'\033[48;5;52m\033[38;5;255m'
-  BG_YEL=$'\033[48;5;94m\033[38;5;255m'
-else
-  R=""; B=""; D=""; RED=""; GRN=""; YEL=""; BLU=""; MAG=""; CYN=""; GRY=""
-  BG_BLU=""; BG_GRN=""; BG_RED=""; BG_YEL=""
-fi
+APP_NAME="supabase-update"
+LOG_FILE="${LOG_FILE:-${HOME}/${APP_NAME}.log}"
+GITHUB_RELEASES_API="https://api.github.com/repos/supabase/cli/releases/latest"
 
-# ───────────── Loglama ─────────────
-LOG_FILE="${HOME}/supabase-update.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-info()    { echo "${BLU}│${R} $*"; }
-ok()      { echo "${GRN}✓${R} $*"; }
-warn()    { echo "${YEL}⚠${R} $*"; }
-err()     { echo "${RED}✗${R} $*" >&2; }
-detail()  { echo "  ${D}$*${R}"; }
-step()    { echo; echo "${MAG}▌${R} ${B}$*${R}"; echo "${MAG}└──────────────────${R}"; }
-banner()  { echo; echo "${BG_BLU}  $1  ${R}"; }
-
-# ───────────── Argümanlar ─────────────
 BACKUP=true
 RESET=false
 ASSUME_YES=false
 FORCE=false
 NO_START=false
+
 TAG_OVERRIDE=""
 WORKDIR_OVERRIDE=""
 RESTORE_ID=""
 RESTORE_AFTER_ID=""
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --no-backup)      BACKUP=false; shift ;;
-    --reset)          RESET=true; shift ;;
-    -y|--yes)         ASSUME_YES=true; shift ;;
-    --force)          FORCE=true; shift ;;
-    --no-start)       NO_START=true; shift ;;
-    --tag)            TAG_OVERRIDE="$2"; shift 2 ;;
-    --workdir)        WORKDIR_OVERRIDE="$2"; shift 2 ;;
-    --restore)        RESTORE_ID="$2"; shift 2 ;;
-    --restore-after)  RESTORE_AFTER_ID="$2"; shift 2 ;;
-    -h|--help)        usage ;;
-    *) err "Bilinmeyen argüman: $1"; echo "Yardım: $0 --help"; exit 1 ;;
-  esac
-done
-
-confirm() {
-  if $ASSUME_YES; then return 0; fi
-  local prompt="$1" default="${2:-n}" hint
-  [[ "$default" == "y" ]] && hint="[E/h]" || hint="[e/H]"
-  read -rp "${YEL}?${R} $prompt $hint " ans
-  if [[ -z "$ans" ]]; then
-    [[ "$default" == "y" ]]
-  else
-    [[ "$ans" =~ ^([eE]|[yY])$ ]]
-  fi
-}
-
-# ───────────── Banner ─────────────
-banner "Supabase CLI Yükseltme"
-detail "$(date '+%Y-%m-%d %H:%M:%S') — pid:$$"
-detail "Log: ${LOG_FILE}"
-$RESET && warn "${B}--reset modu:${R} DB volume silinecek!"
-
-# ───────────── Backup / Restore script'lerini bul ─────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=""
 BACKUP_SCRIPT=""
 RESTORE_SCRIPT=""
 
-find_helper() {
-  local name="$1"
-  for candidate in \
-      "${SCRIPT_DIR}/${name}.sh" \
-      "/usr/local/bin/${name}" \
-      "/usr/local/bin/${name}.sh"; do
-    [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
-  done
-  command -v "$name" 2>/dev/null
-}
-
-BACKUP_SCRIPT=$(find_helper "supabase-backup")
-RESTORE_SCRIPT=$(find_helper "supabase-restore")
-
-if $BACKUP && [[ -z "$BACKUP_SCRIPT" ]]; then
-  err "supabase-backup.sh bulunamadı!"
-  err "Çözümler:"
-  err "  1. Aynı dizine koyun: ${SCRIPT_DIR}/supabase-backup.sh"
-  err "  2. PATH'e ekleyin: sudo cp ... /usr/local/bin/supabase-backup"
-  err "  3. veya --no-backup ile çalıştırın (riskli)"
-  exit 1
-fi
-
-if { [[ -n "$RESTORE_ID" ]] || [[ -n "$RESTORE_AFTER_ID" ]]; } && [[ -z "$RESTORE_SCRIPT" ]]; then
-  err "supabase-restore.sh bulunamadı!"
-  err "Aynı dizine koyun: ${SCRIPT_DIR}/supabase-restore.sh"
-  exit 1
-fi
-
-# --restore: upgrade yapma, sadece restore'a delegate et
-if [[ -n "$RESTORE_ID" ]]; then
-  banner "Restore Modu (upgrade atlanıyor)"
-  info "Yedek: ${B}${RESTORE_ID}${R}"
-  info "Delegate: ${D}${RESTORE_SCRIPT}${R}"
-  restore_args=()
-  [[ "$RESTORE_ID" != "latest" ]] && restore_args+=("$RESTORE_ID") || restore_args+=(--latest)
-  $ASSUME_YES && restore_args+=(-y)
-  [[ -n "$WORKDIR_OVERRIDE" ]] && restore_args+=(--workdir "$WORKDIR_OVERRIDE")
-  exec "$RESTORE_SCRIPT" "${restore_args[@]}"
-fi
-
-# ───────────── Workdir tespiti ─────────────
-detect_workdir() {
-  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
-    [[ -f "${WORKDIR_OVERRIDE}/supabase/config.toml" ]] && echo "$WORKDIR_OVERRIDE" && return 0
-    return 1
-  fi
-  local dir="$PWD"
-  while [[ "$dir" != "/" ]]; do
-    [[ -f "${dir}/supabase/config.toml" ]] && echo "$dir" && return 0
-    dir=$(dirname "$dir")
-  done
-  for candidate in "$HOME" "$HOME"/*/; do
-    candidate="${candidate%/}"
-    [[ -f "${candidate}/supabase/config.toml" ]] && echo "$candidate" && return 0
-  done
-  return 1
-}
-
-# ───────────── Ön kontroller ─────────────
-step "Ön kontroller"
-
-for cmd in curl dpkg sudo file; do
-  command -v "$cmd" >/dev/null || { err "$cmd eksik"; exit 1; }
-done
-ok "Bağımlılıklar tamam"
-
-ARCH=$(dpkg --print-architecture)
-info "Mimari: ${B}${ARCH}${R}"
-[[ -n "$BACKUP_SCRIPT" ]] && info "Backup script: ${D}${BACKUP_SCRIPT}${R}"
-
+ARCH=""
+TAG=""
+VERSION=""
 CURRENT_VERSION=""
 OLD_BINARY_PATH=""
-if command -v supabase >/dev/null 2>&1; then
-  OLD_BINARY_PATH=$(command -v supabase)
-  CURRENT_VERSION=$(supabase --version 2>/dev/null | head -1 | awk '{print $NF}' || echo "")
-  info "Yüklü: ${B}${CURRENT_VERSION:-bilinmiyor}${R} ${D}(${OLD_BINARY_PATH})${R}"
-else
-  info "CLI yüklü değil — temiz kurulum"
-fi
+NEW_VERSION=""
+NEW_BINARY_PATH=""
+BINARY_PATH_CHANGED=false
+SHADOWED_BINARY_FIXED=false
+SHADOWED_BINARY_BACKUP=""
 
-# ───────────── Son sürüm ─────────────
-step "Son sürümü kontrol et"
-
-if [[ -n "$TAG_OVERRIDE" ]]; then
-  TAG="$TAG_OVERRIDE"
-  info "Hedef sürüm: ${B}${TAG}${R} ${D}(manuel)${R}"
-else
-  API_RESPONSE=$(curl -fsSL https://api.github.com/repos/supabase/cli/releases/latest) \
-    || { err "GitHub API erişilemedi. --tag vX.Y.Z ile deneyin."; exit 1; }
-
-  if command -v jq >/dev/null 2>&1; then
-    TAG=$(echo "$API_RESPONSE" | jq -r '.tag_name')
-  else
-    TAG=$(echo "$API_RESPONSE" \
-          | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
-          | head -1 \
-          | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-  fi
-
-  [[ -z "$TAG" || "$TAG" == "null" ]] && { err "tag parse hatası"; exit 1; }
-  [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { err "Geçersiz tag: '$TAG'"; exit 1; }
-  info "En son: ${B}${TAG}${R}"
-fi
-
-VERSION="${TAG#v}"
-
-if [[ "$CURRENT_VERSION" == "$VERSION" ]]; then
-  if $FORCE; then
-    warn "Sürüm aynı ama --force verildi"
-  else
-    echo
-    echo "${BG_GRN}  GÜNCEL  ${R}"
-    info "Sürüm: ${B}supabase ${VERSION}${R}"
-    detail "Zorla yeniden kurmak için: $0 --force"
-    exit 0
-  fi
-fi
-
-[[ -n "$CURRENT_VERSION" ]] && \
-  info "Plan: ${B}${CURRENT_VERSION}${R} → ${GRN}${B}${VERSION}${R}"
-
-# ───────────── Stack durumu ─────────────
-STACK_WAS_RUNNING=false
-DETECTED_WORKDIR=""
+WORKDIR=""
 PROJECT_ID=""
-
-if DETECTED_WORKDIR=$(detect_workdir); then
-  info "Proje: ${B}${DETECTED_WORKDIR}${R}"
-  PROJECT_ID="${DETECTED_WORKDIR##*/}"
-  if command -v supabase >/dev/null 2>&1 && \
-     (cd "$DETECTED_WORKDIR" && supabase status >/dev/null 2>&1); then
-    STACK_WAS_RUNNING=true
-    info "Stack: ${GRN}çalışıyor${R}"
-  else
-    info "Stack: ${D}çalışmıyor${R}"
-  fi
-else
-  warn "Supabase projesi bulunamadı"
-fi
-
-# ───────────── Yedekleme ─────────────
-BACKUP_DONE=false
-BACKUP_LOCATION=""
-
-if ! $BACKUP; then
-  step "Yedekleme"
-  warn "${B}--no-backup${R} verildi, yedek atlanıyor"
-  $RESET && err "DİKKAT: --reset ile birlikte --no-backup → veri KALICI olarak kaybolacak!"
-  if ! confirm "Gerçekten yedeksiz devam edilsin mi?" "n"; then
-    err "İptal edildi"; exit 1
-  fi
-elif ! $STACK_WAS_RUNNING; then
-  step "Yedekleme"
-  warn "Stack çalışmıyor — yedek alınamıyor"
-  detail "Yedeklemek için: cd ${DETECTED_WORKDIR:-<proje>} && supabase start && supabase-backup"
-  if ! confirm "Yedeksiz devam edilsin mi?" "n"; then
-    err "İptal edildi"; exit 1
-  fi
-else
-  step "Yedekleme"
-  info "${B}supabase-backup --quiet${R} çalıştırılıyor..."
-  backup_args=(--quiet)
-  [[ -n "$WORKDIR_OVERRIDE" ]] && backup_args+=(--workdir "$WORKDIR_OVERRIDE")
-
-  if BACKUP_OUT=$("$BACKUP_SCRIPT" "${backup_args[@]}" 2>&1); then
-    echo "$BACKUP_OUT"
-    BACKUP_DONE=true
-    BACKUP_LOCATION=$(echo "$BACKUP_OUT" | grep -oE '/[^[:space:]]*supabase-backups/[^[:space:]]+' | head -1)
-
-    if [[ -z "$BACKUP_LOCATION" ]] || [[ ! -d "$BACKUP_LOCATION" ]]; then
-      err "Yedek dizini bulunamadı: $BACKUP_LOCATION"
-      if ! confirm "Yedeksiz devam edilsin mi?" "n"; then
-        err "İptal edildi"; exit 1
-      fi
-      BACKUP_DONE=false
-    fi
-  else
-    echo "$BACKUP_OUT"
-    err "Yedekleme başarısız"
-    if ! confirm "Yedeksiz devam edilsin mi?" "n"; then
-      err "İptal edildi"; exit 1
-    fi
-  fi
-fi
-
-# ───────────── Stack'i durdur ─────────────
-STOPPED_BY_SCRIPT=false
+STACK_WAS_RUNNING=false
+STACK_STOPPED=false
+STACK_STARTED=false
 USED_RESET=false
 
-if $STACK_WAS_RUNNING; then
-  step "Stack durduruluyor"
-
-  if $RESET; then
-    echo "${BG_YEL}  --reset modu  ${R}"
-    warn "DB volume'u ${B}SİLİNECEK${R}"
-    warn "Yeni stack ${B}TEMİZ${R} bir veritabanıyla başlayacak"
-    $BACKUP_DONE && info "Yedeğiniz alındı: ${D}${BACKUP_LOCATION}${R}"
-
-    if confirm "Devam edilsin mi?" "n"; then
-      (cd "$DETECTED_WORKDIR" && supabase stop --no-backup)
-      STOPPED_BY_SCRIPT=true
-      USED_RESET=true
-      ok "Stack durduruldu, volume SİLİNDİ"
-    else
-      err "İptal edildi"; exit 1
-    fi
-  else
-    info "Stack ${B}data korunarak${R} durdurulacak (volume KALIR)"
-    info "Bu güvenli mod — eski verileriniz upgrade sonrası geri gelecek"
-
-    if confirm "Devam?" "y"; then
-      (cd "$DETECTED_WORKDIR" && supabase stop)
-      STOPPED_BY_SCRIPT=true
-      ok "Stack durduruldu (volume korundu)"
-    else
-      warn "Stack durdurulmadı"
-    fi
-  fi
-fi
-
-# ───────────── İndirme + kurulum ─────────────
-step "Paket indiriliyor"
-
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
-
-FILE="supabase_${VERSION}_linux_${ARCH}.deb"
-URL="https://github.com/supabase/cli/releases/download/${TAG}/${FILE}"
-DEB_PATH="${TMPDIR}/${FILE}"
-
-info "URL: ${D}${URL}${R}"
-curl -fL --progress-bar "$URL" -o "$DEB_PATH"
-
-info "Dosya doğrulanıyor..."
-file "$DEB_PATH" | grep -q "Debian binary package" \
-  || { err "İndirilen dosya .deb değil"; exit 1; }
-ok "Geçerli .deb paketi"
-
-step "Kurulum"
-sudo dpkg -i "$DEB_PATH"
-hash -r 2>/dev/null || true
-
-NEW_BINARY_PATH=$(command -v supabase 2>/dev/null || echo "")
-NEW_VERSION=$(supabase --version 2>/dev/null | head -1 | awk '{print $NF}')
-ok "Kuruldu: ${B}supabase ${NEW_VERSION}${R} ${D}(${NEW_BINARY_PATH})${R}"
-
-BINARY_PATH_CHANGED=false
-[[ -n "$OLD_BINARY_PATH" && "$OLD_BINARY_PATH" != "$NEW_BINARY_PATH" ]] && BINARY_PATH_CHANGED=true
-
-# ───────────── Yeniden başlat ─────────────
-STARTED_BY_SCRIPT=false
-
-if $STOPPED_BY_SCRIPT && ! $NO_START; then
-  step "Stack başlatılıyor"
-  if confirm "'supabase start' çalıştırılsın mı?" "y"; then
-    info "Dizin: ${B}${DETECTED_WORKDIR}${R}"
-    (cd "$DETECTED_WORKDIR" && supabase start)
-    STARTED_BY_SCRIPT=true
-    ok "Stack başlatıldı"
-  else
-    info "Manuel başlatma: ${B}cd ${DETECTED_WORKDIR} && supabase start${R}"
-  fi
-fi
-
-# ───────────── Sağlık kontrolü ─────────────
+BACKUP_DONE=false
+BACKUP_LOCATION=""
 HEALTH_OK=false
 PG_VERSION=""
 TABLE_COUNT="?"
-
-if $STARTED_BY_SCRIPT || ($STACK_WAS_RUNNING && ! $STOPPED_BY_SCRIPT); then
-  step "Sağlık kontrolü"
-
-  info "Çalışan container'lar:"
-  docker ps --filter "name=supabase_" \
-    --format "  ${GRY}{{.Names}}${R} ${D}{{.Image}}${R} ${GRN}{{.Status}}${R}" 2>/dev/null \
-    || warn "docker ps başarısız"
-
-  echo
-  DB_CONTAINER="supabase_db_${PROJECT_ID}"
-  info "DB ping (${DB_CONTAINER})..."
-  if docker exec "$DB_CONTAINER" psql -U postgres -t -c "SELECT 1;" >/dev/null 2>&1; then
-    PG_VERSION=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c "SHOW server_version;" 2>/dev/null | xargs)
-    ok "DB sağlıklı ${D}(PostgreSQL ${PG_VERSION})${R}"
-
-    TABLE_COUNT=$(docker exec "$DB_CONTAINER" psql -U postgres -t -c \
-      "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null | xargs)
-    info "Public şemada ${B}${TABLE_COUNT}${R} tablo"
-    HEALTH_OK=true
-  else
-    warn "DB ping başarısız"
-  fi
-fi
-
-# ───────────── --restore-after: upgrade sonrası restore ─────────────
 RESTORE_AFTER_DONE=false
-if [[ -n "$RESTORE_AFTER_ID" ]]; then
-  step "Restore-after: ${RESTORE_AFTER_ID}"
-  if ! $HEALTH_OK; then
-    err "Stack sağlıklı değil — restore-after güvenli değil, atlanıyor"
-  else
-    restore_args=()
-    [[ "$RESTORE_AFTER_ID" == "latest" ]] && restore_args+=(--latest) || restore_args+=("$RESTORE_AFTER_ID")
-    $ASSUME_YES && restore_args+=(-y --no-backup)  # zaten upgrade öncesi yedek alındı
-    [[ -n "$WORKDIR_OVERRIDE" ]] && restore_args+=(--workdir "$WORKDIR_OVERRIDE")
-    info "Çalıştırılıyor: ${D}${RESTORE_SCRIPT} ${restore_args[*]}${R}"
-    if "$RESTORE_SCRIPT" "${restore_args[@]}"; then
-      RESTORE_AFTER_DONE=true
-      ok "Restore-after başarılı"
-    else
-      err "Restore-after başarısız (upgrade tamam, restore başarısız)"
-    fi
-  fi
-fi
 
-# ───────────── Bitiş özeti ─────────────
-echo
-echo "${BG_GRN}  YÜKSELTME TAMAMLANDI  ${R}"
-echo
-echo "  ${B}CLI:${R}      ${CURRENT_VERSION:-yok} → ${GRN}${B}${NEW_VERSION}${R}"
-[[ -n "$PG_VERSION" ]] && \
-  echo "  ${B}DB:${R}       PostgreSQL ${PG_VERSION} ${D}(${TABLE_COUNT} public tablo)${R}"
+TMPDIR=""
+DEB_PATH=""
 
-if $BACKUP_DONE; then
-  echo "  ${B}Yedek:${R}    ${BACKUP_LOCATION}"
-fi
-
-if $USED_RESET; then
-  echo "  ${B}Mod:${R}      ${YEL}--reset (DB temizlendi)${R}"
+if [[ -t 1 ]]; then
+  R=$'\033[0m'
+  B=$'\033[1m'
+  D=$'\033[2m'
+  RED=$'\033[38;5;203m'
+  GRN=$'\033[38;5;120m'
+  YEL=$'\033[38;5;221m'
+  BLU=$'\033[38;5;111m'
+  MAG=$'\033[38;5;177m'
+  GRY=$'\033[38;5;245m'
 else
-  echo "  ${B}Mod:${R}      ${GRN}normal (data korundu)${R}"
+  R=""
+  B=""
+  D=""
+  RED=""
+  GRN=""
+  YEL=""
+  BLU=""
+  MAG=""
+  GRY=""
 fi
 
-if $HEALTH_OK; then
-  echo "  ${B}Durum:${R}    ${GRN}sağlıklı, çalışıyor${R}"
-elif $STARTED_BY_SCRIPT; then
-  echo "  ${B}Durum:${R}    ${YEL}başlatıldı ama sağlık kontrolü başarısız${R}"
-elif $STOPPED_BY_SCRIPT; then
-  echo "  ${B}Durum:${R}    ${YEL}stack durduruldu — manuel başlatın${R}"
-fi
+usage() {
+  sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'
+}
 
-if $BINARY_PATH_CHANGED; then
-  echo
-  echo "  ${YEL}⚠ Shell cache problemi:${R}"
-  detail "Binary yolu değişti: ${OLD_BINARY_PATH} → ${NEW_BINARY_PATH}"
-  detail "Mevcut terminalinizde: ${GRN}hash -r${R}"
-  detail "Veya yeni bir terminal açın"
-fi
+log() {
+  local level="$1"
+  local message="$2"
+  local color="${3:-}"
+  printf '%s[%s]%s %s\n' "$color" "$level" "$R" "$message"
+}
 
-echo
-detail "Log: ${LOG_FILE}"
-$BACKUP_DONE && detail "Yedeği doğrulamak: ${BACKUP_SCRIPT/.sh/} --verify $(basename "$BACKUP_LOCATION")"
-echo
+info() { log "INFO" "$*" "$BLU"; }
+ok() { log "OK" "$*" "$GRN"; }
+warn() { log "WARN" "$*" "$YEL" >&2; }
+fail() {
+  log "FAIL" "$*" "$RED" >&2
+  exit 1
+}
+detail() { printf '  %s%s%s\n' "$D" "$*" "$R"; }
+
+step() {
+  printf '\n%s[STEP]%s %s%s%s\n' "$MAG" "$R" "$B" "$*" "$R"
+}
+
+on_error() {
+  local status="$1"
+  local line="$2"
+  local command="$3"
+
+  if [[ "$status" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "$command" == exit* ]]; then
+    return 0
+  fi
+
+  log "FAIL" "Satir ${line}: ${command}" "$RED" >&2
+}
+
+cleanup() {
+  if [[ -n "$TMPDIR" && -d "$TMPDIR" ]]; then
+    rm -rf "$TMPDIR"
+  fi
+}
+
+need_value() {
+  local option="$1"
+  local value="${2:-}"
+
+  if [[ -z "$value" || "$value" == --* ]]; then
+    fail "${option} deger ister"
+  fi
+}
+
+parse_args() {
+  while (($#)); do
+    case "$1" in
+      --no-backup)
+        BACKUP=false
+        shift
+        ;;
+      --reset)
+        RESET=true
+        shift
+        ;;
+      -y | --yes)
+        ASSUME_YES=true
+        shift
+        ;;
+      --force)
+        FORCE=true
+        shift
+        ;;
+      --no-start)
+        NO_START=true
+        shift
+        ;;
+      --tag)
+        need_value "$1" "${2:-}"
+        TAG_OVERRIDE="$2"
+        shift 2
+        ;;
+      --workdir)
+        need_value "$1" "${2:-}"
+        WORKDIR_OVERRIDE="$2"
+        shift 2
+        ;;
+      --restore)
+        need_value "$1" "${2:-}"
+        RESTORE_ID="$2"
+        shift 2
+        ;;
+      --restore-after)
+        need_value "$1" "${2:-}"
+        RESTORE_AFTER_ID="$2"
+        shift 2
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *)
+        fail "Bilinmeyen arguman: $1"
+        ;;
+    esac
+  done
+}
+
+init_logging() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
+init_paths() {
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+}
+
+require_cmd() {
+  command -v "$1" > /dev/null 2>&1 || fail "Eksik komut: $1"
+}
+
+require_base_commands() {
+  local cmd
+
+  for cmd in curl dpkg sudo file tee; do
+    require_cmd "$cmd"
+  done
+}
+
+find_helper() {
+  local name="$1"
+  local candidate
+
+  for candidate in \
+    "${SCRIPT_DIR}/${name}.sh" \
+    "/usr/local/bin/${name}" \
+    "/usr/local/bin/${name}.sh"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  command -v "$name" 2> /dev/null || true
+}
+
+resolve_helpers() {
+  BACKUP_SCRIPT="$(find_helper "supabase-backup")"
+  RESTORE_SCRIPT="$(find_helper "supabase-restore")"
+
+  if [[ "$BACKUP" == true && -z "$BACKUP_SCRIPT" ]]; then
+    fail "supabase-backup.sh bulunamadi. Ayni dizine koyun veya --no-backup kullanin."
+  fi
+
+  if [[ -n "$RESTORE_ID$RESTORE_AFTER_ID" && -z "$RESTORE_SCRIPT" ]]; then
+    fail "supabase-restore.sh bulunamadi. Ayni dizine koyun: ${SCRIPT_DIR}/supabase-restore.sh"
+  fi
+}
+
+confirm() {
+  local prompt="$1"
+  local default="${2:-n}"
+  local hint="[e/H]"
+  local answer
+
+  if [[ "$ASSUME_YES" == true ]]; then
+    return 0
+  fi
+
+  if [[ "$default" == "y" ]]; then
+    hint="[E/h]"
+  fi
+
+  read -rp "${YEL}?${R} ${prompt} ${hint} " answer
+  if [[ -z "$answer" ]]; then
+    [[ "$default" == "y" ]]
+  else
+    [[ "$answer" =~ ^([eE]|[yY])$ ]]
+  fi
+}
+
+print_header() {
+  printf '\n%s%s%s\n' "$B" "Supabase CLI update" "$R"
+  detail "$(date '+%Y-%m-%d %H:%M:%S') - pid:$$"
+  detail "Log: ${LOG_FILE}"
+
+  if [[ "$RESET" == true ]]; then
+    warn "--reset modu: DB volume silinecek"
+  fi
+}
+
+handle_restore_only() {
+  local restore_args=()
+
+  if [[ -z "$RESTORE_ID" ]]; then
+    return 0
+  fi
+
+  step "Restore modu"
+  info "Upgrade atlanacak"
+  info "Yedek: ${RESTORE_ID}"
+  info "Delegate: ${RESTORE_SCRIPT}"
+
+  if [[ "$RESTORE_ID" == "latest" ]]; then
+    restore_args+=(--latest)
+  else
+    restore_args+=("$RESTORE_ID")
+  fi
+
+  if [[ "$ASSUME_YES" == true ]]; then
+    restore_args+=(-y)
+  fi
+
+  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
+    restore_args+=(--workdir "$WORKDIR_OVERRIDE")
+  fi
+
+  exec "$RESTORE_SCRIPT" "${restore_args[@]}"
+}
+
+detect_workdir() {
+  local dir
+
+  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
+    if [[ ! -f "${WORKDIR_OVERRIDE}/supabase/config.toml" ]]; then
+      return 1
+    fi
+    cd "$WORKDIR_OVERRIDE" && pwd
+    return 0
+  fi
+
+  dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "${dir}/supabase/config.toml" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+
+  return 1
+}
+
+detect_installed_cli() {
+  if command -v supabase > /dev/null 2>&1; then
+    OLD_BINARY_PATH="$(command -v supabase)"
+    CURRENT_VERSION="$(supabase --version 2> /dev/null | head -1 | awk '{print $NF}' || true)"
+    info "Yuklu CLI: ${CURRENT_VERSION:-bilinmiyor} (${OLD_BINARY_PATH})"
+  else
+    info "CLI yuklu degil, temiz kurulum yapilacak"
+  fi
+}
+
+detect_stack() {
+  if WORKDIR="$(detect_workdir)"; then
+    PROJECT_ID="${WORKDIR##*/}"
+    info "Proje: ${WORKDIR}"
+
+    if command -v supabase > /dev/null 2>&1 && (cd "$WORKDIR" && supabase status > /dev/null 2>&1); then
+      STACK_WAS_RUNNING=true
+      info "Stack: calisiyor"
+    else
+      info "Stack: calismiyor"
+    fi
+  else
+    warn "Supabase projesi bulunamadi"
+  fi
+}
+
+resolve_latest_tag() {
+  local api_response
+
+  api_response="$(curl -fsSL "$GITHUB_RELEASES_API")" ||
+    fail "GitHub API erisilemedi. --tag vX.Y.Z ile deneyin."
+
+  if command -v jq > /dev/null 2>&1; then
+    jq -r '.tag_name' <<< "$api_response"
+  else
+    grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' <<< "$api_response" |
+      head -1 |
+      sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+  fi
+}
+
+resolve_target_version() {
+  if [[ -n "$TAG_OVERRIDE" ]]; then
+    TAG="$TAG_OVERRIDE"
+    info "Hedef surum: ${TAG} (manuel)"
+  else
+    TAG="$(resolve_latest_tag)"
+    info "En son surum: ${TAG}"
+  fi
+
+  if [[ -z "$TAG" || "$TAG" == "null" ]]; then
+    fail "Release tag parse hatasi"
+  fi
+
+  if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    fail "Gecersiz tag: ${TAG}"
+  fi
+
+  VERSION="${TAG#v}"
+}
+
+stop_if_current() {
+  if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
+    return 0
+  fi
+
+  if [[ "$FORCE" == true ]]; then
+    warn "Surum ayni ama --force verildi"
+    return 0
+  fi
+
+  step "Guncel"
+  ok "Supabase CLI ${VERSION} zaten yuklu"
+  detail "Zorla yeniden kurmak icin: $0 --force"
+  exit 0
+}
+
+print_plan() {
+  step "Plan"
+  detail "Current CLI: ${CURRENT_VERSION:-yok}"
+  detail "Target CLI:  ${VERSION}"
+  detail "Workdir:     ${WORKDIR:-bulunamadi}"
+  detail "Backup:      ${BACKUP}"
+  detail "Reset:       ${RESET}"
+  detail "No start:    ${NO_START}"
+
+  if [[ -n "$RESTORE_AFTER_ID" ]]; then
+    detail "Restore after: ${RESTORE_AFTER_ID}"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Upgrade öncesi backup politikasını uygular.
+#   Inputs:
+#     BACKUP, STACK_WAS_RUNNING, BACKUP_SCRIPT, WORKDIR_OVERRIDE
+#   Effects:
+#     supabase-backup helper script'ini çağırabilir.
+#   Outputs:
+#     BACKUP_DONE ve BACKUP_LOCATION state değişkenlerini günceller.
+#   Safety:
+#     Backup kapalıysa veya stack çalışmıyorsa devam etmeden önce onay ister.
+run_backup() {
+  local backup_args=(--quiet)
+  local backup_out
+
+  step "Yedekleme"
+
+  if [[ "$BACKUP" != true ]]; then
+    warn "--no-backup verildi, yedek atlanacak"
+    if [[ "$RESET" == true ]]; then
+      warn "--reset ile --no-backup veri kaybi riski tasir"
+    fi
+    confirm "Gercekten yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
+    return 0
+  fi
+
+  if [[ "$STACK_WAS_RUNNING" != true ]]; then
+    warn "Stack calismiyor, yedek alinamiyor"
+    detail "Yedeklemek icin: cd ${WORKDIR:-<proje>} && supabase start && supabase-backup"
+    confirm "Yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
+    return 0
+  fi
+
+  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
+    backup_args+=(--workdir "$WORKDIR_OVERRIDE")
+  fi
+
+  info "supabase-backup --quiet calistiriliyor"
+  if backup_out="$("$BACKUP_SCRIPT" "${backup_args[@]}" 2>&1)"; then
+    printf '%s\n' "$backup_out"
+    BACKUP_DONE=true
+    BACKUP_LOCATION="$(grep -oE '/[^[:space:]]*supabase-backups/[^[:space:]]+' <<< "$backup_out" | head -1 || true)"
+
+    if [[ -z "$BACKUP_LOCATION" || ! -d "$BACKUP_LOCATION" ]]; then
+      warn "Yedek dizini dogrulanamadi: ${BACKUP_LOCATION:-bos}"
+      confirm "Yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
+      BACKUP_DONE=false
+    fi
+  else
+    printf '%s\n' "$backup_out"
+    warn "Yedekleme basarisiz"
+    confirm "Yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Çalışan Supabase stack'i upgrade öncesi durdurur.
+#   Inputs:
+#     STACK_WAS_RUNNING, RESET, WORKDIR
+#   Effects:
+#     Normal modda `supabase stop` çağırır ve data volume'u korur.
+#     RESET modunda `supabase stop --no-backup` çağırır ve DB volume'u siler.
+#   Safety:
+#     RESET modunda ayrıca onay ister; -y verilmişse CI davranışı olarak onaylanmış sayılır.
+stop_stack() {
+  if [[ "$STACK_WAS_RUNNING" != true ]]; then
+    return 0
+  fi
+
+  step "Stack durdurma"
+
+  if [[ "$RESET" == true ]]; then
+    warn "--reset modu: DB volume silinecek"
+    if [[ "$BACKUP_DONE" == true ]]; then
+      info "Yedek alindi: ${BACKUP_LOCATION}"
+    fi
+    confirm "Devam edilsin mi?" "n" || fail "Iptal edildi"
+
+    (cd "$WORKDIR" && supabase stop --no-backup)
+    STACK_STOPPED=true
+    USED_RESET=true
+    ok "Stack durduruldu, volume silindi"
+    return 0
+  fi
+
+  info "Stack data korunarak durdurulacak"
+  if confirm "Devam?" "y"; then
+    (cd "$WORKDIR" && supabase stop)
+    STACK_STOPPED=true
+    ok "Stack durduruldu"
+  else
+    warn "Stack durdurulmadi"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     GitHub release .deb paketini indirir ve Debian paketi olduğunu doğrular.
+#   Inputs:
+#     TAG, VERSION, ARCH
+#   Effects:
+#     TMPDIR oluşturur, DEB_PATH içine paket yazar.
+#   Failure:
+#     Network, 404 veya .deb doğrulama hatasında non-zero exit.
+download_package() {
+  local file
+  local url
+
+  step "Paket indirme"
+
+  TMPDIR="$(mktemp -d)"
+  file="supabase_${VERSION}_linux_${ARCH}.deb"
+  url="https://github.com/supabase/cli/releases/download/${TAG}/${file}"
+  DEB_PATH="${TMPDIR}/${file}"
+
+  info "URL: ${url}"
+  curl -fL --progress-bar "$url" -o "$DEB_PATH"
+
+  file "$DEB_PATH" | grep -q "Debian binary package" ||
+    fail "Indirilen dosya .deb degil"
+
+  ok "Paket dogrulandi"
+}
+
+# Contract:
+#   Purpose:
+#     İndirilen .deb paketini kurar ve aktif `supabase` binary'sinin hedef sürüme geçtiğini doğrular.
+#   Effects:
+#     `sudo dpkg -i` çağırır.
+#     `/usr/local/bin/supabase` eski binary ile `/usr/bin/supabase` paket binary'sini gölgeliyorsa düzeltir.
+#   Guarantees:
+#     Başarılı dönüşte `supabase --version` hedef VERSION ile eşleşir.
+install_cli() {
+  download_package
+  step "Kurulum"
+  sudo dpkg -i "$DEB_PATH"
+  hash -r 2> /dev/null || true
+
+  fix_shadowed_binary
+
+  NEW_BINARY_PATH="$(command -v supabase 2> /dev/null || true)"
+  NEW_VERSION="$(supabase --version 2> /dev/null | head -1 | awk '{print $NF}')"
+
+  if [[ -n "$OLD_BINARY_PATH" && "$OLD_BINARY_PATH" != "$NEW_BINARY_PATH" ]]; then
+    BINARY_PATH_CHANGED=true
+  fi
+
+  if [[ "$NEW_VERSION" != "$VERSION" ]]; then
+    fail "Aktif supabase surumu ${NEW_VERSION:-bilinmiyor}; hedef ${VERSION}. PATH/binary golgelemesi olabilir."
+  fi
+
+  ok "Kuruldu: supabase ${NEW_VERSION} (${NEW_BINARY_PATH})"
+}
+
+installed_package_binary() {
+  local candidate
+
+  for candidate in /usr/bin/supabase /bin/supabase; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+binary_version() {
+  local binary="$1"
+
+  "$binary" --version 2> /dev/null | head -1 | awk '{print $NF}'
+}
+
+# Contract:
+#   Purpose:
+#     Debian paketinin kurduğu binary PATH'te eski manuel binary tarafından gölgeleniyorsa düzeltir.
+#   Effects:
+#     Sadece `/usr/local/bin/supabase` aktif ve eskiyse onu timestamp'li yedeğe taşır.
+#     `/usr/local/bin/supabase -> /usr/bin/supabase` symlink'i oluşturur.
+#   Safety:
+#     Paket binary'si hedef VERSION değilse hiçbir şey yapmaz.
+fix_shadowed_binary() {
+  local active_path
+  local package_path
+  local active_version
+  local package_version
+  local backup_path
+
+  active_path="$(command -v supabase 2> /dev/null || true)"
+  package_path="$(installed_package_binary || true)"
+
+  [[ -n "$active_path" && -n "$package_path" ]] || return 0
+  [[ "$active_path" != "$package_path" ]] || return 0
+  [[ "$active_path" == "/usr/local/bin/supabase" ]] || return 0
+
+  active_version="$(binary_version "$active_path")"
+  package_version="$(binary_version "$package_path")"
+
+  [[ "$package_version" == "$VERSION" ]] || return 0
+  [[ "$active_version" != "$package_version" ]] || return 0
+
+  warn "Eski /usr/local/bin/supabase, paket binary'sini golgeliyor"
+  backup_path="${active_path}.pre-${APP_NAME}-$(date +%Y%m%d%H%M%S)"
+  sudo mv "$active_path" "$backup_path"
+  sudo ln -s "$package_path" "$active_path"
+
+  SHADOWED_BINARY_FIXED=true
+  SHADOWED_BINARY_BACKUP="$backup_path"
+  info "Golge binary yedeklendi: ${backup_path}"
+  info "Yeni link: ${active_path} -> ${package_path}"
+  hash -r 2> /dev/null || true
+}
+
+# Contract:
+#   Purpose:
+#     Upgrade sonrası stack'i yeniden başlatır.
+#   Inputs:
+#     STACK_STOPPED, NO_START, WORKDIR
+#   Effects:
+#     `supabase start` çağırabilir.
+#   Safety:
+#     --no-start verilmişse hiçbir şey yapmaz.
+start_stack() {
+  if [[ "$STACK_STOPPED" != true || "$NO_START" == true ]]; then
+    return 0
+  fi
+
+  step "Stack baslatma"
+
+  if confirm "'supabase start' calistirilsin mi?" "y"; then
+    info "Dizin: ${WORKDIR}"
+    (cd "$WORKDIR" && supabase start)
+    STACK_STARTED=true
+    ok "Stack baslatildi"
+  else
+    info "Manuel baslatma: cd ${WORKDIR} && supabase start"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Upgrade/start sonrası Supabase DB container'ının temel sağlığını doğrular.
+#   Effects:
+#     `docker ps` ve `docker exec ... psql` çağırır.
+#   Outputs:
+#     HEALTH_OK, PG_VERSION ve TABLE_COUNT state değişkenlerini günceller.
+health_check() {
+  local db_container
+
+  if [[ "$STACK_STARTED" != true && ! ("$STACK_WAS_RUNNING" == true && "$STACK_STOPPED" != true) ]]; then
+    return 0
+  fi
+
+  step "Saglik kontrolu"
+
+  if command -v docker > /dev/null 2>&1; then
+    info "Calisan Supabase container'lari:"
+    docker ps --filter "name=supabase_" \
+      --format "  ${GRY}{{.Names}}${R} ${D}{{.Image}}${R} {{.Status}}" ||
+      warn "docker ps basarisiz"
+  else
+    warn "docker bulunamadi, container kontrolu atlandi"
+    return 0
+  fi
+
+  db_container="supabase_db_${PROJECT_ID}"
+  info "DB ping: ${db_container}"
+
+  if docker exec "$db_container" psql -U postgres -t -c "SELECT 1;" > /dev/null 2>&1; then
+    PG_VERSION="$(docker exec "$db_container" psql -U postgres -t -c "SHOW server_version;" 2> /dev/null | xargs)"
+    TABLE_COUNT="$(docker exec "$db_container" psql -U postgres -t -c \
+      "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2> /dev/null | xargs)"
+    HEALTH_OK=true
+    ok "DB saglikli (PostgreSQL ${PG_VERSION}, ${TABLE_COUNT} public tablo)"
+  else
+    warn "DB ping basarisiz"
+  fi
+}
+
+# Contract:
+#   Purpose:
+#     Upgrade ve health check başarılıysa restore helper'a restore-after çağrısını delege eder.
+#   Inputs:
+#     RESTORE_AFTER_ID, HEALTH_OK, WORKDIR_OVERRIDE
+#   Effects:
+#     supabase-restore helper script'ini çağırabilir.
+#   Safety:
+#     HEALTH_OK değilse restore yapmaz; sadece uyarı verir.
+restore_after() {
+  local restore_args=()
+
+  if [[ -z "$RESTORE_AFTER_ID" ]]; then
+    return 0
+  fi
+
+  step "Restore after"
+
+  if [[ "$HEALTH_OK" != true ]]; then
+    warn "Stack saglikli degil, restore-after atlandi"
+    return 0
+  fi
+
+  if [[ "$RESTORE_AFTER_ID" == "latest" ]]; then
+    restore_args+=(--latest)
+  else
+    restore_args+=("$RESTORE_AFTER_ID")
+  fi
+
+  if [[ "$ASSUME_YES" == true ]]; then
+    restore_args+=(-y --no-backup)
+  fi
+
+  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
+    restore_args+=(--workdir "$WORKDIR_OVERRIDE")
+  fi
+
+  info "Calistiriliyor: ${RESTORE_SCRIPT} ${restore_args[*]}"
+  if "$RESTORE_SCRIPT" "${restore_args[@]}"; then
+    RESTORE_AFTER_DONE=true
+    ok "Restore-after basarili"
+  else
+    warn "Restore-after basarisiz; upgrade tamamlandi"
+  fi
+}
+
+print_summary() {
+  step "Ozet"
+
+  printf '  CLI:    %s -> %s\n' "${CURRENT_VERSION:-yok}" "${NEW_VERSION:-bilinmiyor}"
+  if [[ -n "$PG_VERSION" ]]; then
+    printf '  DB:     PostgreSQL %s (%s public tablo)\n' "$PG_VERSION" "$TABLE_COUNT"
+  fi
+
+  if [[ "$BACKUP_DONE" == true ]]; then
+    printf '  Yedek:  %s\n' "$BACKUP_LOCATION"
+  fi
+
+  if [[ "$USED_RESET" == true ]]; then
+    printf '  Mod:    --reset (DB temizlendi)\n'
+  else
+    printf '  Mod:    normal (data korundu)\n'
+  fi
+
+  if [[ "$HEALTH_OK" == true ]]; then
+    printf '  Durum:  saglikli, calisiyor\n'
+  elif [[ "$STACK_STARTED" == true ]]; then
+    printf '  Durum:  baslatildi ama saglik kontrolu basarisiz\n'
+  elif [[ "$STACK_STOPPED" == true ]]; then
+    printf '  Durum:  stack durduruldu, manuel baslatin\n'
+  else
+    printf '  Durum:  stack degistirilmedi\n'
+  fi
+
+  if [[ "$RESTORE_AFTER_DONE" == true ]]; then
+    printf '  Restore-after: tamam\n'
+  fi
+
+  if [[ "$BINARY_PATH_CHANGED" == true ]]; then
+    printf '\n'
+    warn "Shell cache: binary yolu degisti (${OLD_BINARY_PATH} -> ${NEW_BINARY_PATH})"
+    detail "Mevcut terminalde: hash -r"
+  fi
+
+  if [[ "$SHADOWED_BINARY_FIXED" == true ]]; then
+    printf '\n'
+    detail "Eski shadow binary yedegi: ${SHADOWED_BINARY_BACKUP}"
+  fi
+
+  printf '\n'
+  detail "Log: ${LOG_FILE}"
+  if [[ "$BACKUP_DONE" == true ]]; then
+    detail "Yedegi dogrulamak: ${BACKUP_SCRIPT/.sh/} --verify $(basename "$BACKUP_LOCATION")"
+  fi
+}
+
+main() {
+  trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+  trap cleanup EXIT
+
+  parse_args "$@"
+  init_logging
+  init_paths
+  print_header
+
+  step "On kontroller"
+  require_base_commands
+  ARCH="$(dpkg --print-architecture)"
+  ok "Bagimliliklar tamam"
+  info "Mimari: ${ARCH}"
+
+  resolve_helpers
+  handle_restore_only
+  detect_installed_cli
+
+  step "Surum cozumu"
+  resolve_target_version
+  stop_if_current
+
+  detect_stack
+  print_plan
+  run_backup
+  stop_stack
+  install_cli
+  start_stack
+  health_check
+  restore_after
+  print_summary
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

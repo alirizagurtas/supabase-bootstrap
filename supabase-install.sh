@@ -46,7 +46,7 @@ ask_yes_no() {
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "$1 komutu bulunamadı"
+  command -v "$1" > /dev/null 2>&1 || fail "$1 komutu bulunamadı"
 }
 
 check_command() {
@@ -149,7 +149,7 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
 
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null << EOF
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
@@ -189,7 +189,7 @@ fi
 
 export PATH="$HOME/.local/share/fnm:$PATH"
 
-if command -v fnm >/dev/null 2>&1; then
+if command -v fnm > /dev/null 2>&1; then
   eval "$(fnm env --use-on-cd --shell bash)"
 else
   fail "fnm kurulumu başarısız oldu"
@@ -199,7 +199,9 @@ if ! grep -q 'fnm env' "$HOME/.bashrc"; then
   {
     echo ''
     echo '# fnm'
+    # shellcheck disable=SC2016
     echo 'export PATH="$HOME/.local/share/fnm:$PATH"'
+    # shellcheck disable=SC2016
     echo 'eval "$(fnm env --use-on-cd --shell bash)"'
   } >> "$HOME/.bashrc"
 fi
@@ -222,7 +224,7 @@ require_command pnpm
 ok "pnpm kuruldu: $(pnpm -v)"
 
 step "11. Deno kuruluyor"
-if ! command -v deno >/dev/null 2>&1; then
+if ! command -v deno > /dev/null 2>&1; then
   curl -fsSL https://deno.land/install.sh | sh
 fi
 
@@ -233,7 +235,9 @@ if ! grep -q 'DENO_INSTALL' "$HOME/.bashrc"; then
   {
     echo ''
     echo '# deno'
+    # shellcheck disable=SC2016
     echo 'export DENO_INSTALL="$HOME/.deno"'
+    # shellcheck disable=SC2016
     echo 'export PATH="$DENO_INSTALL/bin:$PATH"'
   } >> "$HOME/.bashrc"
 fi
@@ -248,7 +252,7 @@ case "$SUPABASE_ARCH" in
   x86_64)
     SUPABASE_ASSET="supabase_linux_amd64.tar.gz"
     ;;
-  aarch64|arm64)
+  aarch64 | arm64)
     SUPABASE_ASSET="supabase_linux_arm64.tar.gz"
     ;;
   *)

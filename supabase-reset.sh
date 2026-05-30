@@ -56,7 +56,7 @@ ask_project_dir() {
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "$1 komutu bulunamadı"
+  command -v "$1" > /dev/null 2>&1 || fail "$1 komutu bulunamadı"
 }
 
 print_header() {
@@ -158,7 +158,7 @@ remove_project_dir() {
 
   cd /tmp
 
-  if rm -rf "$PROJECT_DIR" 2>/dev/null; then
+  if rm -rf "$PROJECT_DIR" 2> /dev/null; then
     ok "Proje klasörü silindi: $PROJECT_DIR"
   else
     warn "Normal silme başarısız oldu. sudo ile tekrar deneniyor."
@@ -185,7 +185,7 @@ remove_supabase_home() {
 
   step "Supabase CLI klasörü siliniyor"
 
-  if rm -rf "$supabase_home" 2>/dev/null; then
+  if rm -rf "$supabase_home" 2> /dev/null; then
     ok "Supabase CLI klasörü silindi: $supabase_home"
   else
     warn "Normal silme başarısız oldu. sudo ile tekrar deneniyor."
