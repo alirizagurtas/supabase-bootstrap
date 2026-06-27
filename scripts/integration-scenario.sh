@@ -121,7 +121,7 @@ configure_random_ports() {
       section == "[db]" && $0 == "shadow_port = 54320" { print "shadow_port = " shadow; next }
       section == "[db.pooler]" && $0 == "port = 54329" { print "port = " pooler; next }
       section == "[studio]" && $0 == "port = 54323" { print "port = " studio; next }
-      section == "[inbucket]" && $0 == "port = 54324" { print "port = " inbucket; next }
+      (section == "[inbucket]" || section == "[local_smtp]") && $0 == "port = 54324" { print "port = " inbucket; next }
       section == "[analytics]" && $0 == "port = 54327" { print "port = " analytics; next }
       { print }
     ' "$config" > "$tmp"
@@ -245,7 +245,7 @@ assert_restored_state() {
 }
 
 run_sql_scenario() {
-  local project backup_path
+  local project backup_path restore_log
   prepare_project "sql"
   project="$SCENARIO_PROJECT"
   seed_data "$project"
@@ -254,13 +254,17 @@ run_sql_scenario() {
 
   log "STEP" "restore sql/functions/config while stack is stopped"
   (cd "$project" && supabase stop --no-backup > /dev/null)
-  "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  restore_log="$WORK_ROOT/sql-restore.log"
+  if ! "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy sql \
     --components sql,functions,config \
     --no-backup \
-    -y > /dev/null
+    -y > "$restore_log" 2>&1; then
+    tail -100 "$restore_log" >&2
+    fail "SQL restore failed; log: $restore_log"
+  fi
 
   assert_restored_state "$project"
 }
@@ -286,7 +290,7 @@ run_smoke_scenario() {
 }
 
 run_volume_scenario() {
-  local project backup_path count
+  local project backup_path count restore_log
   prepare_project "volume"
   project="$SCENARIO_PROJECT"
   seed_data "$project"
@@ -294,13 +298,17 @@ run_volume_scenario() {
   corrupt_live_state "$project"
 
   log "STEP" "restore db volume"
-  "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  restore_log="$WORK_ROOT/volume-restore.log"
+  if ! "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy volume \
     --components db \
     --no-backup \
-    -y > /dev/null
+    -y > "$restore_log" 2>&1; then
+    tail -100 "$restore_log" >&2
+    fail "Volume restore failed; log: $restore_log"
+  fi
 
   count=$(query_scalar "$project" "SELECT count(*) FROM public.integration_notes WHERE marker = 'baseline';")
   [[ "$count" == "3" ]] || fail "Volume restore did not recover baseline rows"
@@ -330,4 +338,6 @@ main() {
   log "OK" "integration scenario passed: $SCENARIO"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

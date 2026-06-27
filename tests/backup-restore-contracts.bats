@@ -30,6 +30,13 @@ setup() {
   done
 }
 
+@test "backup prune rejects non-numeric retention values" {
+  run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-backup.sh" --prune --older-than xd
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Geçersiz süre: xd"* ]]
+}
+
 @test "restore missing option values fail cleanly" {
   for option in --verify --strategy --components --workdir --output; do
     run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-restore.sh" "$option"
@@ -89,6 +96,24 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "backup restarts stack when volume archive fails" {
+  workdir="$BATS_TEST_TMPDIR/project"
+  log="$BATS_TEST_TMPDIR/snapshot.log"
+  mkdir -p "$workdir"
+
+  run bash -c "
+    source '$REPO_ROOT/supabase-backup.sh'
+    QUIET=true
+    supabase() { printf '%s\n' \"\$1\" >> '$log'; }
+    archive_volumes() { return 1; }
+    snapshot_volumes_consistently '$workdir' project '$BATS_TEST_TMPDIR/backup' VOLUMES STATS SIZES HASHES
+  "
+
+  [ "$status" -eq 1 ]
+  [ "$(sed -n '1p' "$log")" = "stop" ]
+  [ "$(sed -n '2p' "$log")" = "start" ]
+}
+
 @test "backup copy_config_files copies env with private permissions" {
   workdir="$BATS_TEST_TMPDIR/project"
   backup_path="$BATS_TEST_TMPDIR/backup"
@@ -109,6 +134,67 @@ setup() {
   "
 
   [ "$status" -eq 0 ]
+}
+
+@test "backup shell enforces private permissions for newly created files" {
+  private_root="$BATS_TEST_TMPDIR/private"
+
+  run bash -c "
+    source '$REPO_ROOT/supabase-backup.sh'
+    mkdir -p '$private_root'
+    printf 'sensitive\n' > '$private_root/dump'
+    [[ \$(stat -c '%a' '$private_root') == '700' ]]
+    [[ \$(stat -c '%a' '$private_root/dump') == '600' ]]
+  "
+
+  [ "$status" -eq 0 ]
+}
+
+@test "backup verify rejects wrong hashes and missing required dumps" {
+  backup_path="$BATS_TEST_TMPDIR/backup"
+  mkdir -p "$backup_path/config"
+  printf 'SECRET=value\n' > "$backup_path/config/env.txt"
+  cat > "$backup_path/manifest.json" << 'EOF'
+{
+  "files": {
+    "config/env.txt": {"size": 13, "sha256": "wrong"}
+  }
+}
+EOF
+
+  run bash -c "
+    source '$REPO_ROOT/supabase-backup.sh'
+    QUIET=true
+    verify_backup_dir '$backup_path' true
+  "
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"sha256 uyuşmuyor"* ]]
+  [[ "$output" == *"zorunlu dosya yok"* ]]
+}
+
+@test "project id is read from config instead of directory name" {
+  workdir="$BATS_TEST_TMPDIR/directory-name"
+  mkdir -p "$workdir/supabase"
+  printf 'project_id = "configured-id"\n' > "$workdir/supabase/config.toml"
+
+  run bash -c "source '$REPO_ROOT/supabase-backup.sh'; resolve_project_id '$workdir'"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "configured-id" ]
+}
+
+@test "non-interactive restore defaults to SQL strategy" {
+  run bash -c "
+    source '$REPO_ROOT/supabase-restore.sh'
+    ASSUME_YES=true
+    STRATEGY=''
+    pick_strategy
+    printf '%s\n' \"\$STRATEGY\"
+  "
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "sql" ]
 }
 
 @test "backup restore dry-run rejects dumps with too few objects" {
@@ -224,5 +310,6 @@ EOF
   grep -Fq "supabase status" "$fake_log"
   grep -Fq "supabase start" "$fake_log"
   grep -Fq "pg_restore" "$fake_log"
+  grep -Fq "pg_restore -U supabase_admin" "$fake_log"
   [[ "$output" == *"RESTORE TAMAMLANDI"* ]]
 }

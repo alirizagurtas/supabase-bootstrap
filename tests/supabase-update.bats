@@ -87,6 +87,11 @@ done
 
 if [[ -n "$out" ]]; then
   printf 'fake deb\n' > "$out"
+elif [[ "$*" == *"/releases/tags/"* ]]; then
+  digest="$(printf 'fake deb\n' | sha256sum | awk '{print $1}')"
+  [[ -f "${FAKE_STATE}/bad-digest" ]] && digest="deadbeef"
+  printf '{"assets":[{"name":"supabase_%s_linux_amd64.deb","digest":"sha256:%s"}]}\n' \
+    "$(cat "${FAKE_STATE}/latest-version")" "$digest"
 else
   printf '{"tag_name":"v%s"}\n' "$(cat "${FAKE_STATE}/latest-version")"
 fi
@@ -134,7 +139,7 @@ set -euo pipefail
 printf 'backup %s\n' "$*" >> "${FAKE_LOG}"
 backup_dir="${FAKE_STATE}/supabase-backups/backup-001"
 mkdir -p "$backup_dir"
-printf '[OK] Backup: %s\n' "$backup_dir"
+printf 'BACKUP_PATH=%s\n' "$backup_dir"
 EOF
 
   cat > "$SCRIPT_DIR/supabase-restore.sh" <<'EOF'
@@ -195,6 +200,16 @@ log_contains() {
   ! log_contains "sudo dpkg"
 }
 
+@test "downloaded package must match release SHA-256" {
+  touch "$FAKE_STATE/bad-digest"
+
+  run_update --no-backup -y --no-start
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"SHA-256 degeri release metadata ile uyusmuyor"* ]]
+  ! log_contains "sudo dpkg"
+}
+
 @test "current target version exits without upgrade unless force is set" {
   run_update --tag v2.99.0
 
@@ -232,6 +247,16 @@ log_contains() {
   ! log_contains "sudo dpkg"
 }
 
+@test "restore-only does not require backup helper" {
+  rm "$SCRIPT_DIR/supabase-backup.sh"
+
+  run_update --restore backup-001 -y
+
+  [ "$status" -eq 0 ]
+  log_contains "restore backup-001 -y"
+  ! log_contains "sudo dpkg"
+}
+
 @test "--no-backup --no-start updates CLI without stack operations" {
   run_update --no-backup -y --no-start
 
@@ -246,7 +271,7 @@ log_contains() {
 @test "--workdir passes backup workdir, stops and starts running stack" {
   project="$BATS_TEST_TMPDIR/project"
   mkdir -p "$project/supabase"
-  touch "$project/supabase/config.toml"
+  printf 'project_id = "project"\n' > "$project/supabase/config.toml"
   printf 'true\n' > "$FAKE_STATE/stack-running"
 
   run_update --workdir "$project" -y
@@ -262,7 +287,7 @@ log_contains() {
 @test "--reset stops stack with --no-backup and reports reset mode" {
   project="$BATS_TEST_TMPDIR/project"
   mkdir -p "$project/supabase"
-  touch "$project/supabase/config.toml"
+  printf 'project_id = "project"\n' > "$project/supabase/config.toml"
   printf 'true\n' > "$FAKE_STATE/stack-running"
 
   run_update --workdir "$project" --reset --no-backup -y --no-start
@@ -276,7 +301,7 @@ log_contains() {
 @test "--restore-after runs only after healthy started stack" {
   project="$BATS_TEST_TMPDIR/project"
   mkdir -p "$project/supabase"
-  touch "$project/supabase/config.toml"
+  printf 'project_id = "project"\n' > "$project/supabase/config.toml"
   printf 'true\n' > "$FAKE_STATE/stack-running"
 
   run_update --workdir "$project" --restore-after latest -y
@@ -284,6 +309,21 @@ log_contains() {
   [ "$status" -eq 0 ]
   log_contains "restore --latest -y --no-backup --workdir $project"
   [[ "$output" == *"Restore-after: tamam"* ]]
+}
+
+@test "current CLI still runs restore-after without reinstalling" {
+  project="$BATS_TEST_TMPDIR/renamed-directory"
+  mkdir -p "$project/supabase"
+  printf 'project_id = "configured-project"\n' > "$project/supabase/config.toml"
+  printf 'true\n' > "$FAKE_STATE/stack-running"
+
+  run_update --workdir "$project" --tag v2.99.0 --restore-after latest -y
+
+  [ "$status" -eq 0 ]
+  log_contains "backup --quiet --workdir $project"
+  log_contains "docker exec supabase_db_configured-project"
+  log_contains "restore --latest -y --no-backup --workdir $project"
+  ! log_contains "sudo dpkg"
 }
 
 @test "--restore-after is skipped when stack is not healthy" {

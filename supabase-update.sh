@@ -46,12 +46,14 @@ IFS=$'\n\t'
 APP_NAME="supabase-update"
 LOG_FILE="${LOG_FILE:-${HOME}/${APP_NAME}.log}"
 GITHUB_RELEASES_API="https://api.github.com/repos/supabase/cli/releases/latest"
+GITHUB_RELEASE_BY_TAG_API="https://api.github.com/repos/supabase/cli/releases/tags"
 
 BACKUP=true
 RESET=false
 ASSUME_YES=false
 FORCE=false
 NO_START=false
+SKIP_INSTALL=false
 
 TAG_OVERRIDE=""
 WORKDIR_OVERRIDE=""
@@ -237,7 +239,7 @@ require_cmd() {
 require_base_commands() {
   local cmd
 
-  for cmd in curl dpkg sudo file tee; do
+  for cmd in curl dpkg sudo file tee jq sha256sum; do
     require_cmd "$cmd"
   done
 }
@@ -263,7 +265,7 @@ resolve_helpers() {
   BACKUP_SCRIPT="$(find_helper "supabase-backup")"
   RESTORE_SCRIPT="$(find_helper "supabase-restore")"
 
-  if [[ "$BACKUP" == true && -z "$BACKUP_SCRIPT" ]]; then
+  if [[ -z "$RESTORE_ID" && "$BACKUP" == true && -z "$BACKUP_SCRIPT" ]]; then
     fail "supabase-backup.sh bulunamadi. Ayni dizine koyun veya --no-backup kullanin."
   fi
 
@@ -356,6 +358,16 @@ detect_workdir() {
   return 1
 }
 
+resolve_project_id() {
+  local workdir="$1"
+  local project_id
+
+  project_id=$(sed -nE 's/^[[:space:]]*project_id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+    "${workdir}/supabase/config.toml" | head -1)
+  [[ -n "$project_id" ]] || return 1
+  printf '%s\n' "$project_id"
+}
+
 detect_installed_cli() {
   if command -v supabase > /dev/null 2>&1; then
     OLD_BINARY_PATH="$(command -v supabase)"
@@ -368,7 +380,8 @@ detect_installed_cli() {
 
 detect_stack() {
   if WORKDIR="$(detect_workdir)"; then
-    PROJECT_ID="${WORKDIR##*/}"
+    PROJECT_ID=$(resolve_project_id "$WORKDIR") ||
+      fail "supabase/config.toml içinde project_id bulunamadi"
     info "Proje: ${WORKDIR}"
 
     if command -v supabase > /dev/null 2>&1 && (cd "$WORKDIR" && supabase status > /dev/null 2>&1); then
@@ -424,6 +437,13 @@ stop_if_current() {
 
   if [[ "$FORCE" == true ]]; then
     warn "Surum ayni ama --force verildi"
+    return 0
+  fi
+
+  if [[ -n "$RESTORE_AFTER_ID" ]]; then
+    SKIP_INSTALL=true
+    NEW_VERSION="$CURRENT_VERSION"
+    info "CLI zaten guncel; upgrade atlanip restore-after calistirilacak"
     return 0
   fi
 
@@ -488,7 +508,7 @@ run_backup() {
   if backup_out="$("$BACKUP_SCRIPT" "${backup_args[@]}" 2>&1)"; then
     printf '%s\n' "$backup_out"
     BACKUP_DONE=true
-    BACKUP_LOCATION="$(grep -oE '/[^[:space:]]*supabase-backups/[^[:space:]]+' <<< "$backup_out" | head -1 || true)"
+    BACKUP_LOCATION="$(sed -n 's/^BACKUP_PATH=//p' <<< "$backup_out" | tail -1)"
 
     if [[ -z "$BACKUP_LOCATION" || ! -d "$BACKUP_LOCATION" ]]; then
       warn "Yedek dizini dogrulanamadi: ${BACKUP_LOCATION:-bos}"
@@ -555,6 +575,9 @@ stop_stack() {
 download_package() {
   local file
   local url
+  local release_json
+  local expected_digest
+  local actual_digest
 
   step "Paket indirme"
 
@@ -566,10 +589,21 @@ download_package() {
   info "URL: ${url}"
   curl -fL --progress-bar "$url" -o "$DEB_PATH"
 
+  release_json=$(curl -fsSL "${GITHUB_RELEASE_BY_TAG_API}/${TAG}") ||
+    fail "Release metadata indirilemedi: ${TAG}"
+  expected_digest=$(jq -r --arg name "$file" \
+    '.assets[] | select(.name == $name) | .digest // empty' <<< "$release_json")
+  [[ "$expected_digest" == sha256:* ]] ||
+    fail "Release asset SHA-256 bilgisi bulunamadi: ${file}"
+  expected_digest="${expected_digest#sha256:}"
+  actual_digest=$(sha256sum "$DEB_PATH" | awk '{print $1}')
+  [[ "$actual_digest" == "$expected_digest" ]] ||
+    fail "Indirilen paketin SHA-256 degeri release metadata ile uyusmuyor"
+
   file "$DEB_PATH" | grep -q "Debian binary package" ||
     fail "Indirilen dosya .deb degil"
 
-  ok "Paket dogrulandi"
+  ok "Paket SHA-256 ve dosya tipi dogrulandi"
 }
 
 # Contract:
@@ -832,14 +866,15 @@ main() {
   init_paths
   print_header
 
+  resolve_helpers
+  handle_restore_only
+
   step "On kontroller"
   require_base_commands
   ARCH="$(dpkg --print-architecture)"
   ok "Bagimliliklar tamam"
   info "Mimari: ${ARCH}"
 
-  resolve_helpers
-  handle_restore_only
   detect_installed_cli
 
   step "Surum cozumu"
@@ -849,9 +884,11 @@ main() {
   detect_stack
   print_plan
   run_backup
-  stop_stack
-  install_cli
-  start_stack
+  if [[ "$SKIP_INSTALL" != true ]]; then
+    stop_stack
+    install_cli
+    start_stack
+  fi
   health_check
   restore_after
   print_summary

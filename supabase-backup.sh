@@ -42,6 +42,7 @@
 
 set -Eeuo pipefail
 IFS=$'\n\t'
+umask 077
 
 # ╔═══════════════════════════════════════════════════════════════════╗
 # ║  RENKLER & UI                                                      ║
@@ -108,6 +109,8 @@ WORKDIR_OVERRIDE=""
 OUTPUT_DIR="${HOME}/supabase-backups"
 OLDER_THAN=""
 VERIFY_PATH=""
+SNAPSHOT_WORKDIR=""
+STACK_STOPPED_FOR_SNAPSHOT=false
 
 usage() { sed -n '/^# Kullanım:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -193,6 +196,24 @@ detect_workdir() {
   return 1
 }
 
+resolve_project_id() {
+  local workdir="$1"
+  local config="${workdir}/supabase/config.toml"
+  local project_id
+
+  project_id=$(sed -nE 's/^[[:space:]]*project_id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$config" | head -1)
+  [[ -n "$project_id" ]] || return 1
+  printf '%s\n' "$project_id"
+}
+
+restart_snapshot_stack() {
+  if [[ "$STACK_STOPPED_FOR_SNAPSHOT" == true && -n "$SNAPSHOT_WORKDIR" ]]; then
+    warn "Volume snapshot sonrası stack yeniden başlatılıyor"
+    (cd "$SNAPSHOT_WORKDIR" && supabase start) ||
+      err "Stack otomatik başlatılamadı: $SNAPSHOT_WORKDIR"
+  fi
+}
+
 human_size() {
   local bytes=${1:-0}
   if ((bytes < 1024)); then
@@ -241,7 +262,8 @@ record_file_metadata() {
 discover_project_volumes() {
   local project_id="$1"
 
-  docker volume ls --format '{{.Name}}' | grep "_${project_id}$" 2> /dev/null || true
+  docker volume ls --format '{{.Name}}' |
+    awk -v suffix="_${project_id}" 'length($0) >= length(suffix) && substr($0, length($0) - length(suffix) + 1) == suffix'
 }
 
 json_escape() {
@@ -543,7 +565,7 @@ dump_full_cluster() {
   info "  pg_dump --format=custom (auth, storage, public, hepsi)..."
 
   if docker exec "$db_container" pg_dump -U postgres -d postgres \
-    --format=custom --no-owner --no-privileges --compress=0 2> /dev/null |
+    --format=custom --compress=0 2> /dev/null |
     zstd -q -o "$out"; then
     local size
     size=$(file_size "$out")
@@ -606,9 +628,11 @@ archive_volumes() {
   fi
 
   local vol
+  local errors=0
   for vol in "${volumes_ref[@]}"; do
-    local short_name
-    short_name=$(echo "$vol" | sed -E "s/^supabase_(.+)_${project_id}$/\1/")
+    local volume_base short_name
+    volume_base="${vol#supabase_}"
+    short_name="${volume_base%_"$project_id"}"
     local out="${backup_path}/volumes/${short_name}.tar.zst"
     info "  ${B}${vol}${R} → ${short_name}.tar.zst arşivleniyor..."
 
@@ -621,12 +645,58 @@ archive_volumes() {
       stats_ref["volume_${short_name}_files"]="$file_count"
       ok "    ${short_name}.tar.zst ${D}($(human_size "$size"), ${file_count} öğe)${R}"
     else
-      warn "    ${short_name} volume yedeklenemedi (boş veya erişim sorunu)"
+      err "    ${short_name} volume yedeklenemedi"
       rm -f "$out" 2> /dev/null || true
+      errors=$((errors + 1))
     fi
   done
 
   stats_ref["storage_files"]="${stats_ref[volume_storage_files]:-0}"
+  ((errors == 0))
+}
+
+# Contract:
+#   Purpose:
+#     Fiziksel Docker volume arşivlerini stack kapalıyken tutarlı biçimde alır.
+#   Inputs:
+#     WORKDIR, PROJECT_ID, BACKUP_PATH ve archive_volumes nameref argümanları.
+#   Effects:
+#     Stack'i data korunarak durdurur, volume'ları arşivler ve yeniden başlatır.
+#   Safety:
+#     Arşivleme başarısız olsa bile stack yeniden başlatılır; EXIT trap son güvenlik ağıdır.
+#   Failure:
+#     Stop, archive veya start hatasında non-zero döner.
+snapshot_volumes_consistently() {
+  local workdir="$1"
+  local project_id="$2"
+  local backup_path="$3"
+  local volumes_name="$4"
+  local stats_name="$5"
+  local sizes_name="$6"
+  local hashes_name="$7"
+  local snapshot_ok=true
+
+  step "Tutarlı volume snapshot"
+  info "  Stack kısa süreliğine durduruluyor..."
+  (cd "$workdir" && supabase stop) || {
+    err "Volume snapshot için stack durdurulamadı"
+    return 1
+  }
+
+  SNAPSHOT_WORKDIR="$workdir"
+  STACK_STOPPED_FOR_SNAPSHOT=true
+  archive_volumes \
+    "$project_id" "$backup_path" "$volumes_name" "$stats_name" "$sizes_name" "$hashes_name" ||
+    snapshot_ok=false
+
+  info "  Stack yeniden başlatılıyor..."
+  if ! (cd "$workdir" && supabase start); then
+    err "Volume snapshot sonrası stack başlatılamadı"
+    return 1
+  fi
+  STACK_STOPPED_FOR_SNAPSHOT=false
+
+  $snapshot_ok
 }
 
 # Contract:
@@ -881,7 +951,7 @@ verify_pgdump_zst() {
 
 check_requirements() {
   local missing=()
-  for cmd in docker zstd tar curl bc; do
+  for cmd in docker zstd tar bc jq sha256sum; do
     command -v "$cmd" > /dev/null || missing+=("$cmd")
   done
   if ((${#missing[@]} > 0)); then
@@ -946,7 +1016,39 @@ cmd_list() {
 # ║  --verify                                                          ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 
-# Bir yedek dizinini doğrula. Çıktı: errors sayısı (0 = sağlıklı)
+verify_manifest_hashes() {
+  local target="$1"
+  local manifest="${target}/manifest.json"
+  local errors=0
+  local key expected actual file
+
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    if [[ "$key" == /* || "$key" == *".."* ]]; then
+      err "  Güvenli olmayan manifest yolu: $key"
+      errors=$((errors + 1))
+      continue
+    fi
+
+    file="${target}/${key}"
+    if [[ ! -f "$file" ]]; then
+      err "  $key: dosya yok"
+      errors=$((errors + 1))
+      continue
+    fi
+
+    expected=$(jq -r --arg key "$key" '.files[$key].sha256 // empty' "$manifest")
+    actual=$(file_hash "$file")
+    if [[ -z "$expected" || "$expected" != "$actual" ]]; then
+      err "  $key: sha256 uyuşmuyor"
+      errors=$((errors + 1))
+    fi
+  done < <(jq -r '.files | keys[]' "$manifest")
+
+  ((errors == 0))
+}
+
+# Bir yedek dizinini doğrula.
 verify_backup_dir() {
   local target="$1"
   local errors=0
@@ -960,9 +1062,25 @@ verify_backup_dir() {
     return 1
   fi
 
-  if ! file "$manifest" 2> /dev/null | grep -q "JSON"; then
+  if ! jq -e '.files | type == "object"' "$manifest" > /dev/null 2>&1; then
     err "manifest.json geçerli JSON değil"
     return 1
+  fi
+
+  local required
+  for required in \
+    database/roles.sql.zst \
+    database/schema.sql.zst \
+    database/data.sql.zst \
+    database/full-cluster.dump.zst; do
+    if [[ ! -f "${target}/${required}" ]]; then
+      err "  ${required}: zorunlu dosya yok"
+      errors=$((errors + 1))
+    fi
+  done
+
+  if ! verify_manifest_hashes "$target"; then
+    errors=$((errors + 1))
   fi
 
   # SQL .zst dosyaları
@@ -998,7 +1116,11 @@ verify_backup_dir() {
   fi
 
   # tar.zst arşivleri
-  for arch in "${target}/storage/storage-volume.tar.zst" "${target}/functions/functions.tar.zst"; do
+  local archives=()
+  shopt -s nullglob
+  archives=("${target}"/volumes/*.tar.zst "${target}/functions/functions.tar.zst")
+  shopt -u nullglob
+  for arch in "${archives[@]}"; do
     [[ ! -f "$arch" ]] && continue
     local name
     name=$(basename "$arch")
@@ -1016,7 +1138,7 @@ verify_backup_dir() {
     fi
   done
 
-  return $errors
+  ((errors == 0))
 }
 
 cmd_verify() {
@@ -1068,6 +1190,11 @@ cmd_verify() {
 cmd_prune() {
   [[ -z "$OLDER_THAN" ]] && {
     err "--older-than <süre> gerekli (örn: 30d, 4w, 6m)"
+    exit 1
+  }
+
+  [[ "$OLDER_THAN" =~ ^[1-9][0-9]*[dwmy]$ ]] || {
+    err "Geçersiz süre: $OLDER_THAN"
     exit 1
   }
 
@@ -1155,7 +1282,11 @@ cmd_backup() {
     err "Supabase projesi bulunamadı (config.toml yok)"
     exit 1
   }
-  local PROJECT_ID="${WORKDIR##*/}"
+  local PROJECT_ID
+  PROJECT_ID=$(resolve_project_id "$WORKDIR") || {
+    err "supabase/config.toml içinde project_id bulunamadı"
+    exit 1
+  }
   local DB_CONTAINER="supabase_db_${PROJECT_ID}"
 
   local VOLUMES=()
@@ -1178,6 +1309,8 @@ cmd_backup() {
   local TS
   TS=$(date +%Y-%m-%d-%H%M%S)
   local BACKUP_PATH="${OUTPUT_DIR}/${TS}"
+  mkdir -p "$OUTPUT_DIR"
+  mkdir "$BACKUP_PATH" || fail "Backup dizini oluşturulamadı veya zaten var: $BACKUP_PATH"
   mkdir -p "${BACKUP_PATH}"/{database,volumes,functions,config,metadata,security}
 
   local CLI_VERSION PG_VERSION
@@ -1193,11 +1326,14 @@ cmd_backup() {
   run_security_audit "$WORKDIR" "$DB_CONTAINER" "$TS" "$BACKUP_PATH" SECURITY_WARNINGS FILE_SIZES FILE_HASHES
   dump_portable_sql "$WORKDIR" "$BACKUP_PATH" FILE_SIZES FILE_HASHES
   dump_full_cluster "$DB_CONTAINER" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
-  archive_volumes "$PROJECT_ID" "$BACKUP_PATH" VOLUMES STATS FILE_SIZES FILE_HASHES
   snapshot_metadata "$WORKDIR" "$DB_CONTAINER" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
   archive_functions "$WORKDIR" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
   copy_config_files "$WORKDIR" "$BACKUP_PATH" FILE_SIZES FILE_HASHES
   verify_restore_dry_run "$DB_CONTAINER" "$BACKUP_PATH" STATS FILE_SIZES FILE_HASHES
+
+  snapshot_volumes_consistently \
+    "$WORKDIR" "$PROJECT_ID" "$BACKUP_PATH" VOLUMES STATS FILE_SIZES FILE_HASHES ||
+    fail "Tutarlı volume snapshot tamamlanamadı"
 
   # ───── 8. Manifest ─────
   step "Manifest"
@@ -1252,12 +1388,12 @@ cmd_backup() {
     done
     echo
   else
-    # Quiet modda sadece tek satır özet
-    echo "${GRN}✓${R} Yedek alındı: ${B}${BACKUP_PATH}${R} ${D}($(human_size "$total_bytes"))${R}"
+    printf 'BACKUP_PATH=%s\n' "$BACKUP_PATH"
   fi
 }
 
 main() {
+  trap restart_snapshot_stack EXIT
   parse_args "$@"
 
   case "$MODE" in

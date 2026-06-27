@@ -65,6 +65,7 @@ Kapsam:
 
 - `/tmp` altinda disposable Supabase projesi olusturur.
 - Local Supabase stack baslatir.
+- Legacy `[inbucket]` veya guncel `[local_smtp]` dahil tum servis portlarini izole araliga tasir.
 - `public.integration_notes` tablosuna fake veri yazar.
 - `supabase-backup.sh` ile backup alir.
 - Manifest hash bilgisini dogrular.
@@ -90,12 +91,14 @@ Kapsam:
 - Canli state'i bilerek bozar.
 - Stack'i durdurur.
 - `supabase-restore.sh --strategy sql --components sql,functions,config` calistirir.
+- Dump'i once bos gecici DB'ye restore eder; basarili restore sonrasinda DB isimlerini degistirir.
 - Restore sonrasi DB satirlari, function dosyasi ve `.env` icerigini dogrular.
 
 Bu senaryo su bug siniflarini yakalar:
 
 - Stack kapaliyken SQL restore'un DB hazir degil hatasina dusmesi.
 - `full-cluster.dump.zst` restore edilememesi.
+- Initialized Supabase DB uzerinde ownership, ACL, event trigger veya partition cleanup hatalari.
 - Function/config restore path hatalari.
 - Manifest/hash uyumsuzlugu.
 
@@ -121,7 +124,7 @@ Bu senaryo su bug siniflarini yakalar:
 - Stack stop/start sirasi hatalari.
 - Proje id -> volume name esleme hatalari.
 
-## Scenario 3: Full release drill
+## Scenario 4: Full release drill
 
 Komut:
 
@@ -163,4 +166,5 @@ Product-ready kabul icin minimum:
 - ShellSpec source guard tests pass.
 - SQL stopped-stack integration scenario pass.
 - Volume integration scenario pass.
+- SQL restore logu hata halinde son 100 satiriyla raporlanmali.
 - En az bir kez `--keep` ile uretilen backup manifest elle incelenmis olmali.

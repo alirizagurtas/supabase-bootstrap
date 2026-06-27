@@ -254,6 +254,16 @@ detect_workdir() {
   return 1
 }
 
+resolve_project_id() {
+  local workdir="$1"
+  local project_id
+
+  project_id=$(sed -nE 's/^[[:space:]]*project_id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+    "${workdir}/supabase/config.toml" | head -1)
+  [[ -n "$project_id" ]] || return 1
+  printf '%s\n' "$project_id"
+}
+
 human_size() {
   local bytes=${1:-0}
   if ((bytes < 1024)); then
@@ -272,7 +282,7 @@ file_hash() { sha256sum "$1" 2> /dev/null | awk '{print $1}'; }
 
 check_requirements() {
   local missing=()
-  for cmd in docker zstd tar bc jq; do
+  for cmd in docker zstd tar bc jq sha256sum; do
     command -v "$cmd" > /dev/null || missing+=("$cmd")
   done
   if ((${#missing[@]} > 0)); then
@@ -379,6 +389,11 @@ verify_manifest_hashes() {
 
   while IFS= read -r key; do
     [[ -z "$key" ]] && continue
+    if [[ "$key" == /* || "$key" == *".."* ]]; then
+      err "  $key — güvenli olmayan manifest yolu"
+      errors=$((errors + 1))
+      continue
+    fi
     local f="${target}/${key}"
     if [[ ! -f "$f" ]]; then
       err "  $key — dosya yok"
@@ -386,7 +401,7 @@ verify_manifest_hashes() {
       continue
     fi
     local expected actual
-    expected=$(jq -r ".files[\"${key}\"].sha256" "$manifest")
+    expected=$(jq -r --arg key "$key" '.files[$key].sha256 // empty' "$manifest")
     actual=$(file_hash "$f")
     if [[ "$expected" != "$actual" ]]; then
       err "  $key — sha256 UYUŞMUYOR"
@@ -400,7 +415,24 @@ verify_manifest_hashes() {
     fi
   done <<< "$keys"
 
-  return $errors
+  local component
+  for component in \
+    database/full-cluster.dump.zst \
+    volumes/db.tar.zst \
+    volumes/storage.tar.zst \
+    volumes/edge_runtime.tar.zst \
+    functions/functions.tar.zst \
+    config/config.toml \
+    config/env.txt; do
+    if [[ -f "${target}/${component}" ]] &&
+      ! jq -e --arg key "$component" '.files[$key].sha256 | type == "string" and length > 0' \
+        "$manifest" > /dev/null 2>&1; then
+      err "  $component — manifest hash kaydı yok"
+      errors=$((errors + 1))
+    fi
+  done
+
+  ((errors == 0))
 }
 
 # ╔═══════════════════════════════════════════════════════════════════╗
@@ -472,7 +504,7 @@ cmd_verify() {
 pick_strategy() {
   [[ -n "$STRATEGY" ]] && return
   if $ASSUME_YES; then
-    STRATEGY="volume" # -y default
+    STRATEGY="sql"
     return
   fi
 
@@ -637,6 +669,7 @@ is_selected() { [[ "${COMP_SELECTED[$1]:-false}" == "true" ]]; }
 #   Inputs:
 #     $1: hedef Docker volume adı
 #     $2: kaynak tar.zst arşivi
+#     $3: Supabase project_id
 #   Effects:
 #     Destructive: varsa hedef volume silinir, yeniden oluşturulur, arşiv içine açılır.
 #     Docker geçici container çalıştırır.
@@ -647,6 +680,7 @@ is_selected() { [[ "${COMP_SELECTED[$1]:-false}" == "true" ]]; }
 restore_volume() {
   local vol_name="$1"
   local archive="$2"
+  local project_id="$3"
 
   info "  ${B}${vol_name}${R} ← ${D}$(basename "$archive")${R}"
 
@@ -658,7 +692,10 @@ restore_volume() {
         return 1
       }
   fi
-  docker volume create "$vol_name" > /dev/null
+  docker volume create \
+    --label "com.docker.compose.project=${project_id}" \
+    --label "com.supabase.cli.project=${project_id}" \
+    "$vol_name" > /dev/null
 
   # Arşivi volume'a aç (alpine geçici container)
   if ! docker run --rm \
@@ -741,33 +778,105 @@ restore_functions() {
 
 # Contract:
 #   Purpose:
-#     full-cluster.dump.zst dosyasını canlı Postgres container'a pg_restore ile yükler.
+#     full-cluster.dump.zst dosyasını geçici bir veritabanına yükleyip doğrulandıktan
+#     sonra mevcut postgres veritabanı ile atomik isim değişimi yapar.
 #   Inputs:
 #     $1: yedek dizini
 #     $2: DB container adı
 #   Effects:
-#     Destructive: pg_restore --clean --if-exists ile DB objelerini değiştirebilir/silebilir.
+#     Destructive: başarılı restore sonrasında mevcut postgres veritabanını değiştirir.
 #   Safety:
 #     Stack ve DB container hazır olmalıdır.
+#     Mevcut DB, geçici DB restore'u tamamlanana kadar korunur.
+#     Supabase sistem nesnelerinin ownership/ACL bilgisini korumak için restore
+#     `supabase_admin` ile çalışır.
 #     Komut --single-transaction kullanır; pg_restore desteklediği ölçüde atomiktir.
 restore_sql() {
   local target="$1" db_container="$2"
   local dump="${target}/database/full-cluster.dump.zst"
+  local project_id="${db_container#supabase_db_}"
+  local restore_db="otonorm_restore_$$"
+  local previous_db="otonorm_previous_$$"
+  local old_renamed=false
+  local new_renamed=false
+  local pause_ok=true
+  local service
+  local -a paused_services=()
 
-  info "  Mevcut postgres DB drop ediliyor..."
-  docker exec "$db_container" psql -U postgres -d template1 -c \
-    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='postgres' AND pid<>pg_backend_pid();" > /dev/null 2>&1 || true
+  docker exec "$db_container" dropdb -U supabase_admin --if-exists "$restore_db" > /dev/null 2>&1 || true
+  docker exec "$db_container" dropdb -U supabase_admin --if-exists "$previous_db" > /dev/null 2>&1 || true
+  docker exec "$db_container" createdb -U supabase_admin -T template0 -O postgres "$restore_db" ||
+    {
+      err "  Geçici restore veritabanı oluşturulamadı"
+      return 1
+    }
 
-  info "  pg_restore --clean --if-exists başlıyor..."
-  if zstd -dc "$dump" 2> /dev/null | docker exec -i "$db_container" \
-    pg_restore -U postgres -d postgres \
-    --clean --if-exists --no-owner --no-privileges --single-transaction 2>&1 |
+  info "  pg_restore geçici DB üzerinde başlıyor..."
+  if ! zstd -dc "$dump" 2> /dev/null | docker exec -i "$db_container" \
+    pg_restore -U supabase_admin -d "$restore_db" \
+    --single-transaction 2>&1 |
     tail -20; then
-    ok "  SQL dump restore edildi"
-  else
-    err "  pg_restore başarısız (yukarıdaki çıktıyı inceleyin)"
+    docker exec "$db_container" dropdb -U supabase_admin --if-exists "$restore_db" > /dev/null 2>&1 || true
+    err "  pg_restore başarısız (mevcut postgres DB değiştirilmedi)"
     return 1
   fi
+
+  while IFS= read -r service; do
+    [[ -n "$service" && "$service" != "$db_container" ]] || continue
+    if docker pause "$service" > /dev/null; then
+      paused_services+=("$service")
+    else
+      err "  Servis pause edilemedi: $service"
+      pause_ok=false
+      break
+    fi
+  done < <(
+    docker ps --format '{{.Names}}' |
+      awk -v suffix="_${project_id}" 'substr($0, length($0) - length(suffix) + 1) == suffix'
+  )
+
+  if ((${#paused_services[@]} == 0)); then
+    warn "  Pause edilecek Supabase servis container'ı bulunamadı"
+  fi
+
+  if $pause_ok &&
+    docker exec "$db_container" psql -U supabase_admin -d template1 -v ON_ERROR_STOP=1 -c \
+      "ALTER DATABASE postgres WITH ALLOW_CONNECTIONS false;
+     SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='postgres';
+     ALTER DATABASE postgres RENAME TO ${previous_db};" > /dev/null; then
+    old_renamed=true
+  fi
+
+  if $old_renamed &&
+    docker exec "$db_container" psql -U supabase_admin -d template1 -v ON_ERROR_STOP=1 -c \
+      "ALTER DATABASE ${restore_db} RENAME TO postgres;
+       ALTER DATABASE postgres WITH ALLOW_CONNECTIONS true;" > /dev/null; then
+    new_renamed=true
+  fi
+
+  if ! $new_renamed ||
+    ! docker exec "$db_container" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c \
+      "SELECT 1;" > /dev/null; then
+    err "  DB swap veya doğrulama başarısız; önceki DB geri alınıyor"
+    if $new_renamed; then
+      docker exec "$db_container" psql -U supabase_admin -d template1 -c \
+        "ALTER DATABASE postgres WITH ALLOW_CONNECTIONS false;
+         SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='postgres';" > /dev/null 2>&1 || true
+      docker exec "$db_container" dropdb -U supabase_admin --if-exists postgres > /dev/null 2>&1 || true
+    fi
+    if $old_renamed; then
+      docker exec "$db_container" psql -U supabase_admin -d template1 -c \
+        "ALTER DATABASE ${previous_db} RENAME TO postgres;
+         ALTER DATABASE postgres WITH ALLOW_CONNECTIONS true;" > /dev/null 2>&1 || true
+    fi
+    docker exec "$db_container" dropdb -U supabase_admin --if-exists "$restore_db" > /dev/null 2>&1 || true
+    ((${#paused_services[@]} == 0)) || docker unpause "${paused_services[@]}" > /dev/null 2>&1 || true
+    return 1
+  fi
+
+  docker exec "$db_container" dropdb -U supabase_admin --if-exists "$previous_db" > /dev/null
+  ((${#paused_services[@]} == 0)) || docker unpause "${paused_services[@]}" > /dev/null
+  ok "  SQL dump restore edildi ve DB atomik olarak değiştirildi"
 }
 
 # Contract:
@@ -816,16 +925,20 @@ verify_hybrid() {
   actual_users=$(docker exec "$db_container" psql -U postgres -At -c \
     "SELECT count(*) FROM auth.users;" 2> /dev/null | xargs)
 
+  local errors=0
   if [[ "$expected_tables" == "$actual_tables" ]]; then
     ok "  public tablo: ${expected_tables} ${D}(eşleşti)${R}"
   else
     warn "  public tablo: yedek=${expected_tables} canlı=${actual_tables} ${RED}FARK${R}"
+    errors=$((errors + 1))
   fi
   if [[ "$expected_users" == "$actual_users" ]]; then
     ok "  auth.users: ${expected_users} ${D}(eşleşti)${R}"
   else
     warn "  auth.users: yedek=${expected_users} canlı=${actual_users} ${RED}FARK${R}"
+    errors=$((errors + 1))
   fi
+  ((errors == 0))
 }
 
 # ╔═══════════════════════════════════════════════════════════════════╗
@@ -859,7 +972,11 @@ cmd_restore() {
     err "Supabase projesi bulunamadı"
     exit 1
   }
-  local PROJECT_ID="${WORKDIR##*/}"
+  local PROJECT_ID
+  PROJECT_ID=$(resolve_project_id "$WORKDIR") || {
+    err "supabase/config.toml içinde project_id bulunamadı"
+    exit 1
+  }
   local DB_CONTAINER="supabase_db_${PROJECT_ID}"
   info "Proje: ${B}${PROJECT_ID}${R} ${D}(${WORKDIR})${R}"
 
@@ -929,11 +1046,13 @@ cmd_restore() {
   interactive_components_menu
 
   # Strateji uyumluluğu
-  if [[ "$STRATEGY" == "volume" ]] && is_selected "sql" && ! is_selected "db"; then
-    warn "volume stratejisinde 'sql' bileşeni kullanılmaz"
+  if [[ "$STRATEGY" == "volume" ]] && is_selected "sql"; then
+    err "volume stratejisinde 'sql' bileşeni seçilemez"
+    exit 1
   fi
-  if [[ "$STRATEGY" == "sql" ]] && is_selected "db" && ! is_selected "sql"; then
-    warn "sql stratejisinde 'db' (volume) yerine 'sql' kullanılmalı"
+  if [[ "$STRATEGY" == "sql" ]] && is_selected "db"; then
+    err "sql stratejisinde 'db' volume bileşeni seçilemez"
+    exit 1
   fi
 
   local SEL
@@ -1018,13 +1137,13 @@ cmd_restore() {
     step "Volume restore"
 
     is_selected "db" &&
-      restore_volume "supabase_db_${PROJECT_ID}" "${BACKUP_PATH}/volumes/db.tar.zst"
+      restore_volume "supabase_db_${PROJECT_ID}" "${BACKUP_PATH}/volumes/db.tar.zst" "$PROJECT_ID"
 
     is_selected "storage" && [[ -f "${BACKUP_PATH}/volumes/storage.tar.zst" ]] &&
-      restore_volume "supabase_storage_${PROJECT_ID}" "${BACKUP_PATH}/volumes/storage.tar.zst"
+      restore_volume "supabase_storage_${PROJECT_ID}" "${BACKUP_PATH}/volumes/storage.tar.zst" "$PROJECT_ID"
 
     is_selected "edge" && [[ -f "${BACKUP_PATH}/volumes/edge_runtime.tar.zst" ]] &&
-      restore_volume "supabase_edge_runtime_${PROJECT_ID}" "${BACKUP_PATH}/volumes/edge_runtime.tar.zst"
+      restore_volume "supabase_edge_runtime_${PROJECT_ID}" "${BACKUP_PATH}/volumes/edge_runtime.tar.zst" "$PROJECT_ID"
   fi
 
   # ───── Functions / Config (DB-bağımsız) ─────
@@ -1057,13 +1176,30 @@ cmd_restore() {
   # ───── Hibrit doğrulama ─────
   if [[ "$STRATEGY" == "hybrid" ]]; then
     step "Hibrit doğrulama"
-    verify_hybrid "$BACKUP_PATH" "$DB_CONTAINER"
+    verify_hybrid "$BACKUP_PATH" "$DB_CONTAINER" || {
+      err "Hibrit doğrulama başarısız"
+      exit 1
+    }
   fi
 
   # ───── Sağlık kontrolü ─────
-  step "Sağlık kontrolü"
+  local CHECK_DB_HEALTH=false
+  if is_selected "sql" || is_selected "db" || $STACK_RUNNING || $RESTARTED; then
+    CHECK_DB_HEALTH=true
+  fi
+
   local HEALTH_OK=false
-  if docker exec "$DB_CONTAINER" psql -U postgres -t -c "SELECT 1;" > /dev/null 2>&1; then
+  local HEALTH_CHECKED=false
+  if ! $CHECK_DB_HEALTH; then
+    info "DB bileşeni seçilmedi; sağlık kontrolü atlandı"
+  else
+    HEALTH_CHECKED=true
+    step "Sağlık kontrolü"
+  fi
+
+  if ! $HEALTH_CHECKED; then
+    :
+  elif docker exec "$DB_CONTAINER" psql -U postgres -t -c "SELECT 1;" > /dev/null 2>&1; then
     local pg_v table_n user_n bucket_n
     pg_v=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c "SHOW server_version;" 2> /dev/null | xargs)
     table_n=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
@@ -1076,12 +1212,12 @@ cmd_restore() {
     info "  ${table_n:-0} public tablo, ${user_n:-0} kullanıcı, ${bucket_n:-0} bucket"
     HEALTH_OK=true
   else
-    warn "DB ping başarısız"
+    err "DB ping başarısız"
   fi
 
   # ───── Özet ─────
   echo
-  if $HEALTH_OK; then
+  if ! $HEALTH_CHECKED || $HEALTH_OK; then
     echo "${BG_GRN}  RESTORE TAMAMLANDI  ${R}"
   else
     echo "${BG_YEL}  RESTORE BİTTİ — SAĞLIK SORUNU  ${R}"
@@ -1090,9 +1226,14 @@ cmd_restore() {
   echo "  ${B}Yedek:${R}      $(basename "$BACKUP_PATH")"
   echo "  ${B}Strateji:${R}   ${CYN}${STRATEGY}${R}"
   echo "  ${B}Bileşenler:${R} ${CYN}${SEL}${R}"
-  $HEALTH_OK && echo "  ${B}Durum:${R}      ${GRN}sağlıklı${R}"
+  if $HEALTH_CHECKED; then
+    $HEALTH_OK && echo "  ${B}Durum:${R}      ${GRN}sağlıklı${R}"
+  else
+    echo "  ${B}Durum:${R}      ${GRN}DB dışı bileşenler restore edildi${R}"
+  fi
   echo
   detail "Sorun olursa: pre-restore yedek aynı dizinde, ${B}supabase-restore --latest${R} ile geri dönebilirsiniz"
+  ! $HEALTH_CHECKED || $HEALTH_OK
 }
 
 main() {

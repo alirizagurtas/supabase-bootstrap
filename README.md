@@ -15,6 +15,7 @@ supabase-bootstrap/
   scripts/check.sh
   scripts/integration-scenario.sh
   tests/backup-restore-contracts.bats
+  tests/reset-safety.bats
   tests/scenario-matrix.bats
   tests/supabase-update.bats
   spec/supabase_update_spec.sh
@@ -38,6 +39,14 @@ Daha sıkı release/refactor kontrolü:
 ```bash
 ./scripts/check.sh --strict
 ```
+
+## Backup / restore güvenliği
+
+- Backup dosyaları private izinlerle oluşturulur.
+- Manifest doğrulaması zorunlu SQL dump’larını ve tüm SHA-256 kayıtlarını kontrol eder.
+- Fiziksel Docker volume snapshot’ı sırasında stack kısa süreliğine durdurulur ve işlem sonunda yeniden başlatılır.
+- Non-interactive restore için güvenli varsayılan `sql` stratejisidir. Fiziksel volume restore açıkça `--strategy volume` ile seçilmelidir.
+- `project_id`, dizin adından değil `supabase/config.toml` içinden okunur.
 
 `--strict`, tüm shell scriptlerde ShellCheck style seviyesini ve shfmt drift'ini bloklar.
 
@@ -156,7 +165,12 @@ Varsayılanlar:
 NODE_VERSION=24
 SUPABASE_CHANNEL=stable
 SUPABASE_VERSION=2.95.5
+FNM_TAG=latest
+DENO_TAG=latest
 ```
+
+`fnm`, Deno ve Supabase CLI arşivleri doğrudan GitHub release asset olarak indirilir.
+Kurulumdan önce GitHub release metadata içindeki SHA-256 digest ile doğrulanır.
 
 Normal kullanım:
 
@@ -180,6 +194,12 @@ Node.js sürümünü değiştirmek için:
 
 ```bash
 NODE_VERSION=24 ./supabase-install.sh
+```
+
+`fnm` veya Deno sürümünü sabitlemek için:
+
+```bash
+FNM_TAG=v1.39.0 DENO_TAG=v2.6.9 ./supabase-install.sh
 ```
 
 Tek komutla latest kurmak için:

@@ -55,6 +55,36 @@ ask_project_dir() {
   fi
 }
 
+canonical_dir() {
+  local path="$1"
+  (cd -- "$path" 2> /dev/null && pwd -P)
+}
+
+validate_removal_target() {
+  local target="$1"
+  local home
+  home=$(canonical_dir "$HOME") || fail "HOME çözümlenemedi: $HOME"
+
+  if [ "$target" = "/" ] || [ "$target" = "$home" ]; then
+    fail "Güvenli olmayan klasör silinemez: $target"
+  fi
+
+  if [ ! -f "$target/supabase/config.toml" ]; then
+    fail "Hedef Supabase proje kökü değil: $target"
+  fi
+}
+
+confirm_project_removal() {
+  local target
+  target=$(canonical_dir "$PROJECT_DIR") || fail "Proje klasörü bulunamadı: $PROJECT_DIR"
+  validate_removal_target "$target"
+  PROJECT_DIR="$target"
+
+  warn "Bu işlem proje klasörünü ve local DB volume'unu silecek:"
+  echo "  $PROJECT_DIR"
+  ask_yes_no "Bu proje silinsin mi?" "N"
+}
+
 require_command() {
   command -v "$1" > /dev/null 2>&1 || fail "$1 komutu bulunamadı"
 }
@@ -95,18 +125,14 @@ show_menu() {
 }
 
 stop_supabase_if_possible() {
-  if [ -d "$PROJECT_DIR" ]; then
-    cd "$PROJECT_DIR"
+  local target
+  target=$(canonical_dir "$PROJECT_DIR") || fail "Proje klasörü bulunamadı: $PROJECT_DIR"
+  validate_removal_target "$target"
+  PROJECT_DIR="$target"
 
-    if [ -d "supabase" ]; then
-      step "Supabase durduruluyor"
-      supabase stop --no-backup || warn "Supabase durdurulamadı veya zaten çalışmıyordu"
-    else
-      warn "$PROJECT_DIR içinde supabase/ klasörü bulunamadı"
-    fi
-  else
-    warn "Proje klasörü bulunamadı: $PROJECT_DIR"
-  fi
+  step "Supabase durduruluyor"
+  (cd "$PROJECT_DIR" && supabase stop --no-backup) ||
+    fail "Supabase durdurulamadı; proje klasörü silinmeyecek"
 }
 
 reset_local_db() {
@@ -142,20 +168,12 @@ remove_project_dir() {
     return
   fi
 
-  warn "Bu işlem proje klasörünü silecek:"
-  echo "  $PROJECT_DIR"
-
-  if ! ask_yes_no "Bu klasör silinsin mi?" "N"; then
-    warn "Klasör silme işlemi iptal edildi."
-    return
-  fi
-
-  if [ "$PROJECT_DIR" = "/" ] || [ "$PROJECT_DIR" = "$HOME" ]; then
-    fail "Güvenli olmayan klasör silinemez: $PROJECT_DIR"
-  fi
+  local target
+  target=$(canonical_dir "$PROJECT_DIR") || fail "Proje klasörü çözümlenemedi: $PROJECT_DIR"
+  validate_removal_target "$target"
+  PROJECT_DIR="$target"
 
   step "Proje klasörü siliniyor"
-
   cd /tmp
 
   if rm -rf "$PROJECT_DIR" 2> /dev/null; then
@@ -165,6 +183,7 @@ remove_project_dir() {
     sudo rm -rf "$PROJECT_DIR"
     ok "Proje klasörü sudo ile silindi: $PROJECT_DIR"
   fi
+  return 0
 }
 
 remove_supabase_home() {
@@ -211,41 +230,56 @@ docker_full_cleanup() {
   ok "Docker temizliği tamamlandı"
 }
 
-print_header
-ask_project_dir
+main() {
+  local choice
 
-step "Hedef"
-echo "Proje klasörü: $PROJECT_DIR"
+  print_header
+  ask_project_dir
 
-show_menu
+  step "Hedef"
+  echo "Proje klasörü: $PROJECT_DIR"
 
-read -r -p "$(echo -e "${YELLOW}?${NC} Seçenek seç [1-4]: ")" CHOICE
+  show_menu
+  read -r -p "$(echo -e "${YELLOW}?${NC} Seçenek seç [1-4]: ")" choice
 
-case "$CHOICE" in
-  1)
-    reset_local_db
-    ;;
-  2)
-    require_command supabase
-    stop_supabase_if_possible
-    remove_project_dir
-    ;;
-  3)
-    require_command supabase
-    require_command docker
-    stop_supabase_if_possible
-    remove_project_dir
-    remove_supabase_home
-    docker_full_cleanup
-    ;;
-  4)
-    warn "İşlem iptal edildi."
-    exit 0
-    ;;
-  *)
-    fail "Geçersiz seçenek: $CHOICE"
-    ;;
-esac
+  case "$choice" in
+    1)
+      reset_local_db
+      ;;
+    2)
+      require_command supabase
+      if ! confirm_project_removal; then
+        warn "Klasör silme işlemi iptal edildi."
+        exit 0
+      fi
+      stop_supabase_if_possible
+      remove_project_dir
+      ;;
+    3)
+      require_command supabase
+      require_command docker
+      if ! confirm_project_removal; then
+        warn "Klasör silme işlemi iptal edildi."
+        exit 0
+      fi
+      stop_supabase_if_possible
+      remove_project_dir
+      remove_supabase_home
+      docker_full_cleanup
+      ;;
+    4)
+      warn "İşlem iptal edildi."
+      exit 0
+      ;;
+    *)
+      fail "Geçersiz seçenek: $choice"
+      ;;
+  esac
 
-step "Tamamlandı"
-ok "Sıfırlama yardımcısı tamamlandı"
+  step "Tamamlandı"
+  ok "Sıfırlama yardımcısı tamamlandı"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

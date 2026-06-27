@@ -19,6 +19,35 @@ setup() {
   make_fake_commands
 }
 
+@test "integration port remap supports current local_smtp section" {
+  config="$BATS_TEST_TMPDIR/config.toml"
+  cat > "$config" << 'EOF'
+[api]
+port = 54321
+[db]
+port = 54322
+shadow_port = 54320
+[studio]
+port = 54323
+[local_smtp]
+port = 54324
+[db.pooler]
+port = 54329
+[analytics]
+port = 54327
+EOF
+
+  run bash -c "
+    source '$REPO_ROOT/scripts/integration-scenario.sh'
+    configure_random_ports '$config' 56000
+  "
+
+  [ "$status" -eq 0 ]
+  grep -Fq "port = 56000" "$config"
+  grep -Fq "port = 56004" "$config"
+  ! grep -Fq "port = 54324" "$config"
+}
+
 make_project() {
   printf 'project_id = "project"\n' > "$PROJECT/supabase/config.toml"
   printf 'LIVE_SECRET=corrupt\n' > "$PROJECT/.env"
@@ -89,8 +118,12 @@ case "${1:-}" in
   exec)
     if [[ "$*" == *"pg_restore"* ]]; then
       cat >/dev/null
+      touch "$STATE/restore-done"
       printf 'restore ok\n'
       exit 0
+    fi
+    if [[ "${*: -1}" == "SELECT 1;" && -f "$STATE/fail-after-restore" && -f "$STATE/restore-done" ]]; then
+      exit 1
     fi
     case "${*: -1}" in
       "SHOW server_version;") printf '15.8\n' ;;
@@ -142,7 +175,7 @@ run_restore() {
   [ "$status" -eq 0 ]
   grep -Fq "supabase status" "$FAKE_LOG"
   grep -Fq "supabase start" "$FAKE_LOG"
-  grep -Fq "pg_restore" "$FAKE_LOG"
+  grep -Fq "pg_restore -U supabase_admin" "$FAKE_LOG"
   [[ "$(cat "$PROJECT/supabase/config.toml")" == 'project_id = "project-restored"' ]]
   [[ "$(cat "$PROJECT/.env")" == "LIVE_SECRET=restored" ]]
   [[ "$(stat -c '%a' "$PROJECT/.env")" == "600" ]]
@@ -154,7 +187,8 @@ run_restore() {
 
   [ "$status" -eq 0 ]
   grep -Fq "docker volume rm supabase_db_project" "$FAKE_LOG"
-  grep -Fq "docker volume create supabase_db_project" "$FAKE_LOG"
+  grep -Fq "com.supabase.cli.project=project" "$FAKE_LOG"
+  grep -Fq "docker volume create --label" "$FAKE_LOG"
   grep -Fq "supabase start" "$FAKE_LOG"
   [[ "$output" == *"RESTORE TAMAMLANDI"* ]]
 }
@@ -184,5 +218,16 @@ run_restore() {
   run_restore --strategy sql --components sql --no-backup --allow-project-mismatch -y
 
   [ "$status" -eq 0 ]
+  grep -Fq "pg_restore" "$FAKE_LOG"
+}
+
+@test "scenario: failed post-restore health check returns non-zero" {
+  printf 'true\n' > "$STATE/stack-running"
+  touch "$STATE/fail-after-restore"
+
+  run_restore --strategy sql --components sql --no-backup -y
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"DB swap veya doğrulama başarısız"* ]]
   grep -Fq "pg_restore" "$FAKE_LOG"
 }

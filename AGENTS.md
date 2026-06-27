@@ -68,3 +68,11 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 - For restore/update scripts, test stopped-stack and running-stack paths separately; stack state changes are common sources of hidden logic bugs.
 - Keep heavy real Supabase stack drills separate from the normal quality gate. Prefer fast Bats scenario fixtures for daily regression coverage; run `scripts/integration-scenario.sh` only as a manual/scheduled release drill.
 - `-y` must never bypass integrity failures. Broken manifests or failed hash checks must stop non-interactive restore before destructive commands.
+- Resolve destructive paths and Supabase `project_id` canonically before stop/remove/volume operations; never trust the raw input path or directory basename.
+- Backup verification must compare every manifest SHA-256 and require the core SQL dumps. Format-only checks are not an integrity gate.
+- Physical Docker volumes must be archived while the stack is stopped. Always restart the stack on both success and failure paths.
+- Backup roots and dump files are sensitive; enforce a private umask instead of relying on the caller environment.
+- Disposable stack port remapping must support both legacy `[inbucket]` and current `[local_smtp]` config sections, plus analytics and pooler ports.
+- Full SQL dumps/restores must preserve ownership and ACL metadata. Restore Supabase-managed objects with `supabase_admin`; `postgres` is not superuser in current local stacks.
+- Do not run `pg_restore --clean` over an initialized Supabase database. Restore into an empty temporary DB first, then swap database names only after restore succeeds.
+- Recreated Docker volumes must retain both `com.docker.compose.project` and `com.supabase.cli.project` labels so Supabase cleanup can manage them.
