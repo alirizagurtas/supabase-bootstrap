@@ -29,15 +29,12 @@ require_cmd() {
   command -v "$1" > /dev/null 2>&1 || fail "Missing command: $1"
 }
 
-collect_files() {
-  find "$ROOT_DIR" -maxdepth 2 -type f "$@" | sort
-}
-
 collect_shell_scripts() {
   find "$ROOT_DIR" \
-    -maxdepth 2 \
     -type f \
     -name '*.sh' \
+    ! -path "$ROOT_DIR/.git/*" \
+    ! -path "$ROOT_DIR/supabase/*" \
     ! -path "$ROOT_DIR/tests/*" \
     ! -path "$ROOT_DIR/spec/*" |
     sort
@@ -71,7 +68,7 @@ run_shfmt() {
     # shellcheck disable=SC2046
     shfmt -d -i 2 -ci -sr $(collect_shell_scripts)
   else
-    shfmt -d -i 2 -ci -sr "$ROOT_DIR/supabase-update.sh" "$ROOT_DIR/scripts/check.sh"
+    shfmt -d -i 2 -ci -sr "$ROOT_DIR/bin/supabase-update.sh" "$ROOT_DIR/scripts/check.sh"
   fi
 
   log "OK" "shfmt"

@@ -17,7 +17,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KEEP=false
 SCENARIO="smoke"
 WORK_ROOT=""
@@ -31,7 +31,7 @@ declare -a CREATED_PROJECTS=()
 usage() {
   cat << 'EOF'
 Usage:
-  scripts/integration-scenario.sh [--scenario smoke|sql|volume|all] [--keep]
+scripts/drills/integration-scenario.sh [--scenario smoke|sql|volume|all] [--keep]
 
 Scenarios:
   smoke   start stack, seed data, take backup, verify manifest, restore dry-run
@@ -251,7 +251,7 @@ take_backup() {
   local project="$1"
 
   log "STEP" "backup"
-  "$ROOT_DIR/supabase-backup.sh" \
+  "$ROOT_DIR/bin/supabase-backup.sh" \
     --quiet \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
@@ -317,7 +317,7 @@ run_sql_scenario() {
   log "STEP" "restore sql/functions/config while stack is stopped"
   (cd "$project" && supabase stop --no-backup > /dev/null)
   restore_log="$WORK_ROOT/sql-restore.log"
-  if ! "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  if ! "$ROOT_DIR/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy sql \
@@ -339,7 +339,7 @@ run_smoke_scenario() {
   backup_path=$(take_backup "$project")
 
   log "STEP" "restore dry-run"
-  "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  "$ROOT_DIR/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy sql \
@@ -364,7 +364,7 @@ run_volume_scenario() {
 
   log "STEP" "restore db volume"
   restore_log="$WORK_ROOT/volume-restore.log"
-  if ! "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  if ! "$ROOT_DIR/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy volume \

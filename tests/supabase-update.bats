@@ -2,19 +2,20 @@
 
 setup() {
   REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
-  REAL_SCRIPT="$REPO_ROOT/supabase-update.sh"
+  REAL_SCRIPT="$REPO_ROOT/bin/supabase-update.sh"
   TEST_HOME="$BATS_TEST_TMPDIR/home"
   FAKE_BIN="$BATS_TEST_TMPDIR/bin"
   FAKE_STATE="$BATS_TEST_TMPDIR/state"
   FAKE_LOG="$BATS_TEST_TMPDIR/commands.log"
-  SCRIPT_DIR="$BATS_TEST_TMPDIR/script"
+  DIST_ROOT="$BATS_TEST_TMPDIR/dist"
+  SCRIPT_DIR="$DIST_ROOT/bin"
   SCRIPT="$SCRIPT_DIR/supabase-update.sh"
 
   mkdir -p "$TEST_HOME" "$FAKE_BIN" "$FAKE_STATE" "$SCRIPT_DIR"
   cp "$REAL_SCRIPT" "$SCRIPT"
-  mkdir -p "$SCRIPT_DIR/scripts/lib"
-  cp "$REPO_ROOT/scripts/lib/operation-state.sh" "$SCRIPT_DIR/scripts/lib/"
-  cp "$REPO_ROOT/scripts/lib/service-health.sh" "$SCRIPT_DIR/scripts/lib/"
+  mkdir -p "$DIST_ROOT/lib"
+  cp "$REPO_ROOT/lib/operation-state.sh" "$DIST_ROOT/lib/"
+  cp "$REPO_ROOT/lib/service-health.sh" "$DIST_ROOT/lib/"
   chmod +x "$SCRIPT"
 
   printf '2.99.0\n' > "$FAKE_STATE/supabase-version"

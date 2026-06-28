@@ -2,7 +2,7 @@
 
 setup() {
   REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
-  LIB="$REPO_ROOT/scripts/lib/service-health.sh"
+LIB="$REPO_ROOT/lib/service-health.sh"
   FAKE_BIN="$BATS_TEST_TMPDIR/bin"
   FAKE_LOG="$BATS_TEST_TMPDIR/health.log"
   WORKDIR="$BATS_TEST_TMPDIR/project"

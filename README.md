@@ -10,21 +10,25 @@ Proje SQL dosyaları, migration dosyaları, seed verileri, `.env` dosyaları ve 
 
 ```txt
 supabase-bootstrap/
-  README.md
-  AGENTS.md
+  bin/
+    supabase-install.sh
+    supabase-reset.sh
+    supabase-update.sh
+    supabase-backup.sh
+    supabase-restore.sh
+  lib/
+    operation-state.sh
+    service-health.sh
   scripts/check.sh
-  scripts/integration-scenario.sh
-  tests/backup-restore-contracts.bats
-  tests/reset-safety.bats
-  tests/scenario-matrix.bats
-  tests/supabase-update.bats
-  spec/supabase_update_spec.sh
-  supabase-install.sh
-  supabase-reset.sh
-  supabase-update.sh
-  supabase-backup.sh
-  supabase-restore.sh
+  scripts/drills/
+    integration-scenario.sh
+    cli-update-drill.sh
+  tests/
+  spec/
+  docs/
 ```
+
+Eksiksiz dosya envanteri: `docs/repository-map.md`
 
 ## Geliştirme kontrolleri
 
@@ -49,12 +53,12 @@ Daha sıkı release/refactor kontrolü:
 - `project_id`, dizin adından değil `supabase/config.toml` içinden okunur.
 - Update, backup, restore ve reset aynı proje kilidini ve kalıcı işlem journal'ını kullanır. CLI update ayrıca host-global kilit alır.
 - Update öncesi doğrulanmış backup ile stop/start zorunludur; `--no-backup` ve `--no-start` update akışında reddedilir.
-- Update yarıda kalırsa `supabase-update.sh --recover --workdir <proje>` journal'daki backup ile recovery dener.
-- İkinci failure-domain için `supabase-backup.sh --mirror <dir> --mirror-key-file <0600-key>` kullanılır. Eşdeğer ortam değişkenleri `SUPABASE_BACKUP_MIRROR` ve `SUPABASE_BACKUP_KEY_FILE` değerleridir.
+- Update yarıda kalırsa `bin/supabase-update.sh --recover --workdir <proje>` journal'daki backup ile recovery dener.
+- İkinci failure-domain için `bin/supabase-backup.sh --mirror <dir> --mirror-key-file <0600-key>` kullanılır. Eşdeğer ortam değişkenleri `SUPABASE_BACKUP_MIRROR` ve `SUPABASE_BACKUP_KEY_FILE` değerleridir.
 - Physical volume arşivleri ownership, ACL ve Storage extended attribute metadata'sını korur.
 
 Kanonik yaşam döngüsü ve kod uygunluk tablosu:
-`docs/cli-managed-lifecycle-decision-tree.md`
+`docs/lifecycle-decision-tree.md`
 
 `--strict`, tüm shell scriptlerde ShellCheck style seviyesini ve shfmt drift'ini bloklar.
 
@@ -71,21 +75,21 @@ checkbashisms
 Hızlı testler fake command ve fixture verilerle çalışır. Gerçek Supabase stack üzerinde hafif smoke:
 
 ```bash
-./scripts/integration-scenario.sh
+./scripts/drills/integration-scenario.sh
 ```
 
 Ağır release/drill senaryoları manuel/scheduled çalıştırılmalıdır:
 
 ```bash
-./scripts/integration-scenario.sh --scenario all
-./scripts/cli-update-drill.sh --scenario all
+./scripts/drills/integration-scenario.sh --scenario all
+./scripts/drills/cli-update-drill.sh --scenario all
 ```
 
 Detaylar: `docs/integration-scenarios.md`
 
 ## Ne kurar?
 
-`supabase-install.sh` Ubuntu üzerinde şunları kurar:
+`bin/supabase-install.sh` Ubuntu üzerinde şunları kurar:
 
 ```txt
 Docker Engine
@@ -101,7 +105,7 @@ Temel yardımcı paketler
 
 ## Ne yapmaz?
 
-`supabase-install.sh` şunları yapmaz:
+`bin/supabase-install.sh` şunları yapmaz:
 
 ```txt
 Supabase projesi init etmez
@@ -123,8 +127,8 @@ HTTPS ile:
 ```bash
 git clone https://github.com/alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x supabase-install.sh
-./supabase-install.sh
+chmod +x bin/supabase-install.sh
+./bin/supabase-install.sh
 ```
 
 SSH ile:
@@ -132,8 +136,8 @@ SSH ile:
 ```bash
 git clone git@github.com:alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x supabase-install.sh
-./supabase-install.sh
+chmod +x bin/supabase-install.sh
+./bin/supabase-install.sh
 ```
 
 SSH kullanımı için sunucuda GitHub SSH key tanımlı olmalıdır.
@@ -143,7 +147,7 @@ SSH kullanımı için sunucuda GitHub SSH key tanımlı olmalıdır.
 `curl` ile:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh -o supabase-install.sh
+curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/bin/supabase-install.sh -o supabase-install.sh
 chmod +x supabase-install.sh
 ./supabase-install.sh
 ```
@@ -151,7 +155,7 @@ chmod +x supabase-install.sh
 `wget` ile:
 
 ```bash
-wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh -O supabase-install.sh
+wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/bin/supabase-install.sh -O supabase-install.sh
 chmod +x supabase-install.sh
 ./supabase-install.sh
 ```
@@ -159,7 +163,7 @@ chmod +x supabase-install.sh
 ### Tek komutla kurulum
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh?$(date +%s)")
+bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/bin/supabase-install.sh?$(date +%s)")
 ```
 
 > Not: Script interaktif çalışır. Devam etmek isteyip istemediğini sorar.
@@ -184,37 +188,37 @@ Kurulumdan önce GitHub release metadata içindeki SHA-256 digest ile doğrulan�
 Normal kullanım:
 
 ```bash
-./supabase-install.sh
+./bin/supabase-install.sh
 ```
 
 Belirli Supabase CLI sürümü kurmak için:
 
 ```bash
-SUPABASE_VERSION=2.96.0 ./supabase-install.sh
+SUPABASE_VERSION=2.96.0 ./bin/supabase-install.sh
 ```
 
 En güncel Supabase CLI release sürümünü kurmak için:
 
 ```bash
-SUPABASE_CHANNEL=latest ./supabase-install.sh
+SUPABASE_CHANNEL=latest ./bin/supabase-install.sh
 ```
 
 Node.js sürümünü değiştirmek için:
 
 ```bash
-NODE_VERSION=24 ./supabase-install.sh
+NODE_VERSION=24 ./bin/supabase-install.sh
 ```
 
 `fnm` veya Deno sürümünü sabitlemek için:
 
 ```bash
-FNM_TAG=v1.39.0 DENO_TAG=v2.6.9 ./supabase-install.sh
+FNM_TAG=v1.39.0 DENO_TAG=v2.6.9 ./bin/supabase-install.sh
 ```
 
 Tek komutla latest kurmak için:
 
 ```bash
-SUPABASE_CHANNEL=latest bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-install.sh)
+SUPABASE_CHANNEL=latest bash <(curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/bin/supabase-install.sh)
 ```
 
 ## Stable ve latest farkı
@@ -277,7 +281,7 @@ supabase-otonorm/
 
 ## Reset / temizlik scripti
 
-`supabase-reset.sh`, mevcut local Supabase/Docker ortamını temizlemek için yardımcı script’tir.
+`bin/supabase-reset.sh`, mevcut local Supabase/Docker ortamını temizlemek için yardımcı script’tir.
 
 Script önce hedef klasörü sorar. Varsayılan hedef:
 
@@ -296,8 +300,8 @@ HTTPS ile:
 ```bash
 git clone https://github.com/alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x supabase-reset.sh
-./supabase-reset.sh
+chmod +x bin/supabase-reset.sh
+./bin/supabase-reset.sh
 ```
 
 SSH ile:
@@ -305,35 +309,13 @@ SSH ile:
 ```bash
 git clone git@github.com:alirizagurtas/supabase-bootstrap.git
 cd supabase-bootstrap
-chmod +x supabase-reset.sh
-./supabase-reset.sh
+chmod +x bin/supabase-reset.sh
+./bin/supabase-reset.sh
 ```
 
-### Tek dosya indirip çalıştırma
-
-`curl` ile:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-reset.sh -o supabase-reset.sh
-chmod +x supabase-reset.sh
-./supabase-reset.sh
-```
-
-`wget` ile:
-
-```bash
-wget https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-reset.sh -O supabase-reset.sh
-chmod +x supabase-reset.sh
-./supabase-reset.sh
-```
-
-### Tek komutla çalıştırma
-
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/alirizagurtas/supabase-bootstrap/main/supabase-reset.sh?$(date +%s)")
-```
-
-> Not: Reset scripti interaktif çalışır. Hedef klasörü ve yapmak istediğin işlemi sorar.
+Reset; `bin/supabase-backup.sh` ve `lib/operation-state.sh` ile birlikte
+çalıştığı için tek dosya olarak dağıtılmaz. Repository clone edilerek
+çalıştırılmalıdır.
 
 ## Reset seçenekleri
 
@@ -415,6 +397,6 @@ Asıl veritabanı kaynakları ayrı private repoda durur.
 
 ## Not
 
-`supabase-install.sh`, Docker grubuna mevcut kullanıcıyı ekler. Bu değişiklik genelde logout/login veya reboot sonrası aktif olur.
+`bin/supabase-install.sh`, Docker grubuna mevcut kullanıcıyı ekler. Bu değişiklik genelde logout/login veya reboot sonrası aktif olur.
 
 Bu yüzden kurulumdan sonra `sudo reboot` önerilir.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+# Standalone installer entrypoint; repository user commands live under bin/.
 set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-24}"

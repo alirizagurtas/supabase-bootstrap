@@ -1,5 +1,7 @@
 # Supabase CLI-managed self-host yaşam döngüsü
 
+Bu dosya, repository içindeki kullanıcı komutlarının canonical karar ağacıdır.
+
 Bu doküman, aynı Supabase CLI-managed Docker stack'inin yerel makinede veya
 Hetzner gibi uzak bir sunucuda yönetilmesi için kanonik karar ağacıdır. Host
 değişebilir; stack sürücüsü her durumda Supabase CLI'dır.

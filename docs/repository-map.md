@@ -1,0 +1,83 @@
+# Repository map
+
+Bu belge repository içindeki dosyaların canonical envanteridir. Yeni bir dosya
+eklendiğinde, taşındığında veya sorumluluğu değiştiğinde aynı değişiklik içinde
+güncellenir.
+
+## Klasör sözleşmesi
+
+| Yol | Sorumluluk |
+| --- | --- |
+| `bin/` | Kullanıcının doğrudan çalıştırdığı Supabase yaşam döngüsü komutları |
+| `lib/` | `bin/` komutlarının source ettiği, doğrudan çalıştırılmayan ortak Bash kodu |
+| `scripts/` | Repository geliştirme ve kalite otomasyonu |
+| `scripts/drills/` | Gerçek ve disposable Supabase stack kullanan ağır doğrulamalar |
+| `tests/` | Hızlı Bats davranış ve sözleşme testleri |
+| `spec/` | ShellSpec testleri |
+| `docs/` | Karar, işletim ve doğrulama dokümantasyonu |
+
+## Dosya envanteri
+
+### Kök
+
+| Dosya | Görev |
+| --- | --- |
+| `README.md` | Kurulum, kullanım ve ana güvenlik sözleşmelerini açıklar. |
+| `AGENTS.md` | Bu repository üzerinde çalışan ajanların kalite ve güvenlik kurallarını tanımlar. |
+| `.gitignore` | Editör swap dosyaları gibi makine-yerel geçici dosyaları Git dışında tutar. |
+
+### Kullanıcı komutları
+
+| Dosya | Görev |
+| --- | --- |
+| `bin/supabase-install.sh` | Ubuntu host için Docker, CLI ve gerekli araçları kurar. |
+| `bin/supabase-backup.sh` | SQL, fiziksel volume, config ve function içeren doğrulanmış backup üretir. |
+| `bin/supabase-restore.sh` | Backup manifestini doğrular ve seçilen stratejiyle kontrollü restore yapar. |
+| `bin/supabase-update.sh` | CLI-managed stack için backup, update, health check ve recovery akışını yönetir. |
+| `bin/supabase-reset.sh` | Doğrulanmış backup şartıyla proje kapsamındaki temizleme/reset işlemlerini yürütür. |
+
+### Ortak kütüphaneler
+
+| Dosya | Görev |
+| --- | --- |
+| `lib/operation-state.sh` | Proje kilidi, host-global update kilidi ve kalıcı işlem journal'ı sağlar. |
+| `lib/service-health.sh` | Auth, REST ve Storage gateway endpointlerini salt okunur olarak doğrular. |
+
+### Geliştirme ve drill araçları
+
+| Dosya | Görev |
+| --- | --- |
+| `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
+| `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
+| `scripts/drills/cli-update-drill.sh` | Gerçek CLI sürümleriyle update ve zorlanmış recovery senaryolarını çalıştırır. |
+
+### Bats testleri
+
+| Dosya | Görev |
+| --- | --- |
+| `tests/backup-restore-contracts.bats` | Backup/restore argüman, bütünlük, uyumluluk ve recovery sözleşmelerini test eder. |
+| `tests/operation-state.bats` | Kilit ve işlem journal davranışlarını test eder. |
+| `tests/reset-safety.bats` | Reset/install source güvenliğini ve yıkıcı hedef kontrollerini test eder. |
+| `tests/scenario-matrix.bats` | Disposable senaryo runner'ının fixture tabanlı dallarını test eder. |
+| `tests/service-health.bats` | Gateway sağlık problarının başarı ve hata davranışlarını test eder. |
+| `tests/supabase-update.bats` | Update, restore delegation, stop/start ve hata akışlarını fake komutlarla test eder. |
+
+### ShellSpec
+
+| Dosya | Görev |
+| --- | --- |
+| `spec/supabase_update_spec.sh` | Update scriptinin temel source edilebilirlik sözleşmesini ShellSpec ile doğrular. |
+
+### Dokümantasyon
+
+| Dosya | Görev |
+| --- | --- |
+| `docs/repository-map.md` | Klasör sözleşmesini ve tüm version-controlled dosyaların görevini listeler. |
+| `docs/lifecycle-decision-tree.md` | CLI-managed self-host yaşam döngüsünün canonical karar ağacını ve kod uygunluğunu tutar. |
+| `docs/integration-scenarios.md` | Hızlı testler ile gerçek stack drill'lerinin kapsamını ve komutlarını açıklar. |
+
+## Repository dışında kalan çalışma verileri
+
+`supabase/`, backup hedefleri, `.supabase-ops/` journal dizini, encryption key
+dosyaları ve geçici drill projeleri çalışma verisidir. Kaynak kod envanterine
+ve Git commitlerine dahil edilmez.

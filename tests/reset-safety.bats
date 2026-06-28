@@ -9,7 +9,7 @@ setup() {
 }
 
 @test "reset script can be sourced without opening prompts" {
-  run bash -c "HOME='$TEST_HOME'; source '$REPO_ROOT/supabase-reset.sh'; declare -F main validate_removal_target >/dev/null"
+  run bash -c "HOME='$TEST_HOME'; source '$REPO_ROOT/bin/supabase-reset.sh'; declare -F main validate_removal_target >/dev/null"
 
   [ "$status" -eq 0 ]
   [ "$output" = "" ]
@@ -19,7 +19,7 @@ setup() {
   for target in "$TEST_HOME" "$TEST_HOME/" "$TEST_HOME/../home"; do
     run bash -c "
       HOME='$TEST_HOME'
-      source '$REPO_ROOT/supabase-reset.sh'
+      source '$REPO_ROOT/bin/supabase-reset.sh'
       canonical=\$(canonical_dir '$target')
       validate_removal_target \"\$canonical\"
     "
@@ -35,7 +35,7 @@ setup() {
 
   run bash -c "
     HOME='$TEST_HOME'
-    source '$REPO_ROOT/supabase-reset.sh'
+    source '$REPO_ROOT/bin/supabase-reset.sh'
     validate_removal_target '$target'
   "
 
@@ -46,7 +46,7 @@ setup() {
 @test "failed stack stop blocks project removal flow" {
   run bash -c "
     HOME='$TEST_HOME'
-    source '$REPO_ROOT/supabase-reset.sh'
+    source '$REPO_ROOT/bin/supabase-reset.sh'
     PROJECT_DIR='$PROJECT'
     supabase() { return 1; }
     stop_supabase_if_possible
@@ -62,7 +62,7 @@ setup() {
   printf 'ID=debian\n' > "$os_release"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-install.sh'
+    source '$REPO_ROOT/bin/supabase-install.sh'
     declare -F main download_verified_github_asset >/dev/null
     validate_ubuntu '$os_release'
   "
@@ -75,7 +75,7 @@ setup() {
   destination="$BATS_TEST_TMPDIR/tool.zip"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-install.sh'
+    source '$REPO_ROOT/bin/supabase-install.sh'
     curl() {
       local out='' i next
       for ((i = 1; i <= \$#; i++)); do

@@ -40,9 +40,9 @@ resolve_project_id() {
 load_operation_state() {
   local script_dir ops_lib
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  ops_lib="${script_dir}/scripts/lib/operation-state.sh"
+  ops_lib="${script_dir}/../lib/operation-state.sh"
   [[ -r "$ops_lib" ]] || fail "Operation state library bulunamadı: $ops_lib"
-  # shellcheck source=scripts/lib/operation-state.sh
+  # shellcheck source=lib/operation-state.sh
   source "$ops_lib"
 }
 

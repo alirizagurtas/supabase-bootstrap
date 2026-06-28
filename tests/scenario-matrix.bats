@@ -38,7 +38,7 @@ port = 54327
 EOF
 
   run bash -c "
-    source '$REPO_ROOT/scripts/integration-scenario.sh'
+    source '$REPO_ROOT/scripts/drills/integration-scenario.sh'
     configure_random_ports '$config' 56000
   "
 
@@ -181,7 +181,7 @@ run_restore() {
     FAKE_LOG="$FAKE_LOG" \
     STATE="$STATE" \
     SUPABASE_RECOVERY_MODE="${RECOVERY_MODE:-false}" \
-    "$REPO_ROOT/supabase-restore.sh" "$BACKUP" \
+    "$REPO_ROOT/bin/supabase-restore.sh" "$BACKUP" \
     --workdir "$PROJECT" \
     --output "$BATS_TEST_TMPDIR/backups" \
     "$@"

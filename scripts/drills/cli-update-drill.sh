@@ -7,7 +7,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FROM_VERSION="${FROM_VERSION:-2.107.0}"
 TO_VERSION="${TO_VERSION:-2.108.0}"
 SCENARIO="all"
@@ -55,7 +55,7 @@ parse_args() {
         shift
         ;;
       -h | --help)
-        echo "Usage: scripts/cli-update-drill.sh [--scenario success|recovery|all] [--keep]"
+        echo "Usage: scripts/drills/cli-update-drill.sh [--scenario success|recovery|all] [--keep]"
         exit 0
         ;;
       *)
@@ -162,7 +162,7 @@ configure_project() {
   bash -c '
     source "$1"
     configure_random_ports "$2" "$3"
-  ' _ "$ROOT_DIR/scripts/integration-scenario.sh" "$PROJECT/supabase/config.toml" "$port_base"
+  ' _ "$ROOT_DIR/scripts/drills/integration-scenario.sh" "$PROJECT/supabase/config.toml" "$port_base"
 }
 
 seed_and_verify_data() {
@@ -219,7 +219,7 @@ run_update() {
     PATH="$FAKE_BIN:$PATH" \
     SUPABASE_OP_HOST_LOCK="$WORK_ROOT/host-update.lock" \
     LOG_FILE="$WORK_ROOT/update.log" \
-    "$ROOT_DIR/supabase-update.sh" \
+    "$ROOT_DIR/bin/supabase-update.sh" \
     --tag "v${TO_VERSION}" \
     --workdir "$PROJECT" \
     -y > "$WORK_ROOT/update-output.log" 2>&1

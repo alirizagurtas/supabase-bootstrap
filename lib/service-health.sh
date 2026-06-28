@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Read-only HTTP probes for the CLI-managed API gateway.
+# Read-only HTTP probes for bin/ CLI-managed operations.
 
 supabase_service_health() {
   local workdir="$1"

@@ -2,7 +2,7 @@
 
 setup() {
   REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
-  LIB="$REPO_ROOT/scripts/lib/operation-state.sh"
+LIB="$REPO_ROOT/lib/operation-state.sh"
   WORKDIR="$BATS_TEST_TMPDIR/project"
   mkdir -p "$WORKDIR"
 }

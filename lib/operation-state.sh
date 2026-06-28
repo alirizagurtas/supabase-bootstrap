@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared lock and persistent state journal for mutating Supabase operations.
+# Shared lock and persistent state journal for bin/ Supabase operations.
 # The caller must provide fail/log handling; this library only returns non-zero.
 
 OPS_ID=""
@@ -161,6 +161,7 @@ ops_phase() {
   [[ -n "$OPS_STATE_FILE" && -f "$OPS_STATE_FILE" ]] || return 1
 
   OPS_PHASE="$phase"
+  # shellcheck disable=SC2016 # jq variables must not be expanded by Bash.
   ops_atomic_jq \
     '.phase = $phase | .updated_at = $now' \
     --arg phase "$phase" \
@@ -173,6 +174,7 @@ ops_data() {
   $OPS_NESTED && return 0
   [[ -n "$OPS_STATE_FILE" && -f "$OPS_STATE_FILE" ]] || return 1
 
+  # shellcheck disable=SC2016 # jq variables must not be expanded by Bash.
   ops_atomic_jq \
     '.data[$key] = $value | .updated_at = $now' \
     --arg key "$key" \
@@ -186,6 +188,7 @@ ops_finish() {
   [[ -n "$OPS_STATE_FILE" && -f "$OPS_STATE_FILE" ]] || return 1
 
   OPS_STATUS="$status"
+  # shellcheck disable=SC2016 # jq variables must not be expanded by Bash.
   ops_atomic_jq \
     '.status = $status | .updated_at = $now | .finished_at = $now' \
     --arg status "$status" \

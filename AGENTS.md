@@ -24,6 +24,13 @@ shellspec
 checkbashisms
 ```
 
+## Repository structure
+
+- User-facing commands live in `bin/`.
+- Shared sourced Bash code lives in `lib/`.
+- Development automation lives in `scripts/`; real-stack drills live in `scripts/drills/`.
+- Keep `docs/repository-map.md` synchronized when a version-controlled file is added, moved, removed, or changes responsibility.
+
 `checkbashisms` is only for POSIX `/bin/sh` scripts. The Supabase scripts are Bash scripts, so Bash syntax is expected.
 
 ## Test policy
@@ -66,7 +73,7 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 - When passing associative arrays through `declare -n`, pass the original variable name string to nested helpers, not the local nameref variable name. Passing the nameref itself can create circular nameref failures.
 - Add focused behavior tests for every extracted helper that mutates files, calls external commands, or controls destructive restore/update flow.
 - For restore/update scripts, test stopped-stack and running-stack paths separately; stack state changes are common sources of hidden logic bugs.
-- Keep heavy real Supabase stack drills separate from the normal quality gate. Prefer fast Bats scenario fixtures for daily regression coverage; run `scripts/integration-scenario.sh` only as a manual/scheduled release drill.
+- Keep heavy real Supabase stack drills separate from the normal quality gate. Prefer fast Bats scenario fixtures for daily regression coverage; run `scripts/drills/integration-scenario.sh` only as a manual/scheduled release drill.
 - `-y` must never bypass integrity failures. Broken manifests or failed hash checks must stop non-interactive restore before destructive commands.
 - Resolve destructive paths and Supabase `project_id` canonically before stop/remove/volume operations; never trust the raw input path or directory basename.
 - Backup verification must compare every manifest SHA-256 and require the core SQL dumps. Format-only checks are not an integrity gate.
@@ -85,4 +92,4 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 - CLI updates mutate a host-global binary, so they require both the host-global update lock and the project operation lock.
 - Physical volume archives must use GNU tar with ownership, ACL, and all xattrs preserved; Storage object bytes depend on extended attributes.
 - Configured mirror backups must be encrypted with a private 0600 key file, decrypt-tested, and SHA-256 verified after atomic publication.
-- Release validation must include both `scripts/integration-scenario.sh --scenario all` and `scripts/cli-update-drill.sh --scenario all`.
+- Release validation must include both `scripts/drills/integration-scenario.sh --scenario all` and `scripts/drills/cli-update-drill.sh --scenario all`.

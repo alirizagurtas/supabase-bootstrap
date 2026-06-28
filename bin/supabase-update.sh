@@ -264,13 +264,13 @@ init_logging() {
 
 init_paths() {
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  OPS_LIB="${SCRIPT_DIR}/scripts/lib/operation-state.sh"
-  HEALTH_LIB="${SCRIPT_DIR}/scripts/lib/service-health.sh"
+  OPS_LIB="${SCRIPT_DIR}/../lib/operation-state.sh"
+  HEALTH_LIB="${SCRIPT_DIR}/../lib/service-health.sh"
   [[ -r "$OPS_LIB" ]] || fail "Operation state library bulunamadı: $OPS_LIB"
   [[ -r "$HEALTH_LIB" ]] || fail "Service health library bulunamadı: $HEALTH_LIB"
-  # shellcheck source=scripts/lib/operation-state.sh
+  # shellcheck source=lib/operation-state.sh
   source "$OPS_LIB"
-  # shellcheck source=scripts/lib/service-health.sh
+  # shellcheck source=lib/service-health.sh
   source "$HEALTH_LIB"
 }
 

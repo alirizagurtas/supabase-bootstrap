@@ -139,13 +139,13 @@ fail() {
 load_operation_state() {
   local script_dir ops_lib health_lib
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  ops_lib="${script_dir}/scripts/lib/operation-state.sh"
-  health_lib="${script_dir}/scripts/lib/service-health.sh"
+  ops_lib="${script_dir}/../lib/operation-state.sh"
+  health_lib="${script_dir}/../lib/service-health.sh"
   [[ -r "$ops_lib" ]] || fail "Operation state library bulunamadı: $ops_lib"
   [[ -r "$health_lib" ]] || fail "Service health library bulunamadı: $health_lib"
-  # shellcheck source=scripts/lib/operation-state.sh
+  # shellcheck source=lib/operation-state.sh
   source "$ops_lib"
-  # shellcheck source=scripts/lib/service-health.sh
+  # shellcheck source=lib/service-health.sh
   source "$health_lib"
 }
 

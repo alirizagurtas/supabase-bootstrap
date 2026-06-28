@@ -7,7 +7,7 @@ setup() {
 }
 
 @test "backup help prints usage" {
-  run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-backup.sh" --help
+  run env HOME="$TEST_HOME" "$REPO_ROOT/bin/supabase-backup.sh" --help
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Kullanım:"* ]]
@@ -15,7 +15,7 @@ setup() {
 }
 
 @test "restore help prints usage" {
-  run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-restore.sh" --help
+  run env HOME="$TEST_HOME" "$REPO_ROOT/bin/supabase-restore.sh" --help
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Kullanım:"* ]]
@@ -24,14 +24,14 @@ setup() {
 
 @test "backup missing option values fail cleanly" {
   for option in --workdir --output --mirror --mirror-key-file --verify --older-than; do
-    run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-backup.sh" "$option"
+    run env HOME="$TEST_HOME" "$REPO_ROOT/bin/supabase-backup.sh" "$option"
     [ "$status" -eq 1 ]
     [[ "$output" == *"${option} değer ister"* ]]
   done
 }
 
 @test "backup prune rejects non-numeric retention values" {
-  run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-backup.sh" --prune --older-than xd
+  run env HOME="$TEST_HOME" "$REPO_ROOT/bin/supabase-backup.sh" --prune --older-than xd
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"Geçersiz süre: xd"* ]]
@@ -39,7 +39,7 @@ setup() {
 
 @test "restore missing option values fail cleanly" {
   for option in --verify --strategy --components --workdir --output; do
-    run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-restore.sh" "$option"
+    run env HOME="$TEST_HOME" "$REPO_ROOT/bin/supabase-restore.sh" "$option"
     [ "$status" -eq 1 ]
     [[ "$output" == *"${option} değer ister"* ]]
   done
@@ -76,7 +76,7 @@ EOF
   chmod +x "$fake_bin/gpg"
 
   run env GNUPGHOME="$gnupg_home" PATH="$fake_bin:$PATH" bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     MIRROR_DIR='$mirror_dir'
     MIRROR_KEY_FILE='$key_file'
     ops_data() { :; }
@@ -104,7 +104,7 @@ EOF
   chmod 644 "$key_file"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     MIRROR_DIR='$BATS_TEST_TMPDIR/mirror'
     MIRROR_KEY_FILE='$key_file'
     mirror_backup '$source_dir'
@@ -115,14 +115,14 @@ EOF
 }
 
 @test "restore rejects invalid strategy before side effects" {
-  run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-restore.sh" --strategy risky --dry-run
+  run env HOME="$TEST_HOME" "$REPO_ROOT/bin/supabase-restore.sh" --strategy risky --dry-run
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"Geçersiz --strategy: risky"* ]]
 }
 
 @test "backup and restore can be sourced without executing router" {
-  run bash -c "source '$REPO_ROOT/supabase-backup.sh'; source '$REPO_ROOT/supabase-restore.sh'; declare -F cmd_backup cmd_restore main >/dev/null"
+  run bash -c "source '$REPO_ROOT/bin/supabase-backup.sh'; source '$REPO_ROOT/bin/supabase-restore.sh'; declare -F cmd_backup cmd_restore main >/dev/null"
 
   [ "$status" -eq 0 ]
   [ "$output" = "" ]
@@ -132,7 +132,7 @@ EOF
   manifest="$BATS_TEST_TMPDIR/manifest.json"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     VOLUMES=(\"supabase_db_project\")
     declare -A STATS=([total_schemas]=2 [public_tables]=3 [auth_users]=4)
     SECURITY_WARNINGS=(\"policy uses \\\"quoted\\\" value\")
@@ -152,7 +152,7 @@ EOF
   mkdir -p "$backup_path/volumes"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     QUIET=true
     VOLUMES=()
     declare -A STATS=()
@@ -171,7 +171,7 @@ EOF
   mkdir -p "$workdir"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     QUIET=true
     supabase() { printf '%s\n' \"\$1\" >> '$log'; }
     archive_volumes() { return 1; }
@@ -191,7 +191,7 @@ EOF
   printf 'SECRET=value\n' > "$workdir/.env"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     QUIET=true
     declare -A FILE_SIZES=()
     declare -A FILE_HASHES=()
@@ -209,7 +209,7 @@ EOF
   private_root="$BATS_TEST_TMPDIR/private"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     mkdir -p '$private_root'
     printf 'sensitive\n' > '$private_root/dump'
     [[ \$(stat -c '%a' '$private_root') == '700' ]]
@@ -232,7 +232,7 @@ EOF
 EOF
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     QUIET=true
     verify_backup_dir '$backup_path' true
   "
@@ -247,7 +247,7 @@ EOF
   mkdir -p "$workdir/supabase"
   printf 'project_id = "configured-id"\n' > "$workdir/supabase/config.toml"
 
-  run bash -c "source '$REPO_ROOT/supabase-backup.sh'; resolve_project_id '$workdir'"
+  run bash -c "source '$REPO_ROOT/bin/supabase-backup.sh'; resolve_project_id '$workdir'"
 
   [ "$status" -eq 0 ]
   [ "$output" = "configured-id" ]
@@ -255,7 +255,7 @@ EOF
 
 @test "non-interactive restore defaults to SQL strategy" {
   run bash -c "
-    source '$REPO_ROOT/supabase-restore.sh'
+    source '$REPO_ROOT/bin/supabase-restore.sh'
     ASSUME_YES=true
     STRATEGY=''
     pick_strategy
@@ -284,14 +284,14 @@ EOF
   chmod +x "$fake_bin/docker"
 
   run env PATH="$fake_bin:$PATH" TARGET_PG=15.8 bash -c "
-    source '$REPO_ROOT/supabase-restore.sh'
+    source '$REPO_ROOT/bin/supabase-restore.sh'
     verify_sql_compatibility '$backup_path' 17.1 db
   "
   [ "$status" -eq 1 ]
   [[ "$output" == *"daha eski PostgreSQL major"* ]]
 
   run env PATH="$fake_bin:$PATH" TARGET_PG=17.1 bash -c "
-    source '$REPO_ROOT/supabase-restore.sh'
+    source '$REPO_ROOT/bin/supabase-restore.sh'
     verify_sql_compatibility '$backup_path' 17.1 db
   "
   [ "$status" -eq 1 ]
@@ -317,7 +317,7 @@ EOF
   chmod +x "$fake_bin/supabase" "$recovery"
 
   run env PATH="$fake_bin:$PATH" FAKE_LOG="$fake_log" bash -c "
-    source '$REPO_ROOT/supabase-restore.sh'
+    source '$REPO_ROOT/bin/supabase-restore.sh'
     PRE_RESTORE_BACKUP_PATH='$backup_path'
     RESTORE_WORKDIR='$workdir'
     RESTORE_EXECUTABLE='$recovery'
@@ -358,7 +358,7 @@ EOF
   chmod +x "$fake_bin/zstd" "$fake_bin/docker"
 
   run bash -c "
-    source '$REPO_ROOT/supabase-backup.sh'
+    source '$REPO_ROOT/bin/supabase-backup.sh'
     QUIET=true
     declare -A STATS=()
     declare -A FILE_SIZES=()
@@ -449,7 +449,7 @@ EOF
   : > "$fake_log"
 
   run env PATH="$fake_bin:$PATH" FAKE_LOG="$fake_log" HOME="$BATS_TEST_TMPDIR/home" \
-    "$REPO_ROOT/supabase-restore.sh" "$backup_path" \
+    "$REPO_ROOT/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$workdir" --strategy sql --components sql --no-backup -y
 
   [ "$status" -eq 0 ]
