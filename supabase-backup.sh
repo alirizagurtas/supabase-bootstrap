@@ -38,6 +38,8 @@
 #   supabase-backup --prune --older-than 30d   eski yedekleri sil
 #   supabase-backup --workdir <yol>         proje dizinini elle belirt
 #   supabase-backup --output <dir>          yedek dizinini özelleştir
+#   supabase-backup --mirror <dir>          şifreli ikinci hedefe kopyala
+#   supabase-backup --mirror-key-file <file> 0600 izinli şifreleme anahtarı
 #   supabase-backup --help
 
 set -Eeuo pipefail
@@ -107,10 +109,15 @@ banner() {
 MODE="backup"
 WORKDIR_OVERRIDE=""
 OUTPUT_DIR="${HOME}/supabase-backups"
+MIRROR_DIR="${SUPABASE_BACKUP_MIRROR:-}"
+MIRROR_KEY_FILE="${SUPABASE_BACKUP_KEY_FILE:-}"
 OLDER_THAN=""
 VERIFY_PATH=""
 SNAPSHOT_WORKDIR=""
 STACK_STOPPED_FOR_SNAPSHOT=false
+INCOMPLETE_BACKUP_PATH=""
+INCOMPLETE_MIRROR_PATH=""
+VOLUME_ARCHIVE_IMAGE="${SUPABASE_VOLUME_ARCHIVE_IMAGE:-ubuntu:24.04}"
 
 usage() { sed -n '/^# Kullanım:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -139,6 +146,16 @@ parse_args() {
       --output)
         need_value "$1" "${2:-}"
         OUTPUT_DIR="$2"
+        shift 2
+        ;;
+      --mirror)
+        need_value "$1" "${2:-}"
+        MIRROR_DIR="$2"
+        shift 2
+        ;;
+      --mirror-key-file)
+        need_value "$1" "${2:-}"
+        MIRROR_KEY_FILE="$2"
         shift 2
         ;;
       --list)
@@ -212,6 +229,31 @@ restart_snapshot_stack() {
     (cd "$SNAPSHOT_WORKDIR" && supabase start) ||
       err "Stack otomatik başlatılamadı: $SNAPSHOT_WORKDIR"
   fi
+}
+
+load_operation_state() {
+  local script_dir ops_lib
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ops_lib="${script_dir}/scripts/lib/operation-state.sh"
+  [[ -r "$ops_lib" ]] || fail "Operation state library bulunamadı: $ops_lib"
+  # shellcheck source=scripts/lib/operation-state.sh
+  source "$ops_lib"
+}
+
+backup_exit() {
+  local status=$?
+
+  restart_snapshot_stack
+  if [[ "$status" -ne 0 && -n "$INCOMPLETE_BACKUP_PATH" && -d "$INCOMPLETE_BACKUP_PATH" ]]; then
+    rm -rf "$INCOMPLETE_BACKUP_PATH"
+  fi
+  if [[ "$status" -ne 0 && -n "$INCOMPLETE_MIRROR_PATH" && -e "$INCOMPLETE_MIRROR_PATH" ]]; then
+    rm -rf "$INCOMPLETE_MIRROR_PATH"
+  fi
+  if declare -F ops_mark_exit > /dev/null 2>&1; then
+    ops_mark_exit "$status" || true
+  fi
+  return "$status"
 }
 
 human_size() {
@@ -636,8 +678,10 @@ archive_volumes() {
     local out="${backup_path}/volumes/${short_name}.tar.zst"
     info "  ${B}${vol}${R} → ${short_name}.tar.zst arşivleniyor..."
 
-    if docker run --rm -v "${vol}:/source:ro" alpine:latest \
-      tar -cf - -C /source . 2> /dev/null | zstd -q -o "$out" 2> /dev/null; then
+    if docker run --rm -v "${vol}:/source:ro" "$VOLUME_ARCHIVE_IMAGE" \
+      tar --xattrs --xattrs-include='*' --acls --numeric-owner \
+      -cpf - -C /source . 2> /dev/null |
+      zstd -q -o "$out" 2> /dev/null; then
       local size file_count
       size=$(file_size "$out")
       record_file_metadata "volumes/${short_name}.tar.zst" "$out" "$sizes_name" "$hashes_name"
@@ -951,9 +995,12 @@ verify_pgdump_zst() {
 
 check_requirements() {
   local missing=()
-  for cmd in docker zstd tar bc jq sha256sum; do
+  for cmd in docker zstd tar bc jq sha256sum flock; do
     command -v "$cmd" > /dev/null || missing+=("$cmd")
   done
+  if [[ -n "$MIRROR_DIR" ]] && ! command -v gpg > /dev/null 2>&1; then
+    missing+=("gpg")
+  fi
   if ((${#missing[@]} > 0)); then
     err "Eksik komutlar: ${missing[*]}"
     err "Kurulum: sudo apt install ${missing[*]}"
@@ -1141,6 +1188,53 @@ verify_backup_dir() {
   ((errors == 0))
 }
 
+mirror_backup() {
+  local source="$1"
+  local name destination staging mode source_hash destination_hash
+
+  if [[ -z "$MIRROR_DIR" ]]; then
+    warn "LOCAL_ONLY: harici backup mirror tanımlı değil; backup yalnızca ana hedefte"
+    return 0
+  fi
+
+  [[ -f "$MIRROR_KEY_FILE" && -s "$MIRROR_KEY_FILE" ]] ||
+    fail "Mirror için dolu bir --mirror-key-file gerekli"
+  mode=$(stat -c '%a' "$MIRROR_KEY_FILE")
+  ((8#$mode & 077)) &&
+    fail "Mirror key file yalnız sahibi tarafından okunabilir olmalı (chmod 600): $MIRROR_KEY_FILE"
+
+  name=$(basename "$source")
+  destination="${MIRROR_DIR}/${name}.tar.gpg"
+  staging="${MIRROR_DIR}/.${name}.tar.gpg.incomplete.$$"
+  mkdir -p "$MIRROR_DIR"
+  [[ ! -e "$destination" && ! -e "$staging" ]] ||
+    fail "Mirror backup hedefi zaten var: $destination"
+
+  INCOMPLETE_MIRROR_PATH="$staging"
+  tar -cf - -C "$(dirname "$source")" "$name" |
+    gpg --batch --yes --quiet --pinentry-mode loopback \
+      --passphrase-file "$MIRROR_KEY_FILE" \
+      --cipher-algo AES256 \
+      --symmetric \
+      --output "$staging" ||
+    fail "Backup şifreli mirror arşivine dönüştürülemedi"
+  gpg --batch --quiet --pinentry-mode loopback \
+    --passphrase-file "$MIRROR_KEY_FILE" \
+    --decrypt "$staging" |
+    tar -tf - > /dev/null ||
+    fail "Şifreli mirror arşivi decrypt/tar doğrulamasından geçemedi"
+  source_hash=$(sha256sum "$staging" | awk '{print $1}')
+  mv "$staging" "$destination" ||
+    fail "Mirror backup atomik olarak yayınlanamadı"
+  destination_hash=$(sha256sum "$destination" | awk '{print $1}')
+  [[ "$source_hash" == "$destination_hash" ]] ||
+    fail "Mirror arşivi yayınlama sonrası SHA-256 doğrulamasından geçemedi"
+  INCOMPLETE_MIRROR_PATH=""
+  ops_data mirror_path "$destination"
+  ops_data mirror_sha256 "$destination_hash"
+  ok "Şifreli mirror backup doğrulandı: $destination"
+}
+
 cmd_verify() {
   local target="$VERIFY_PATH"
   [[ -z "$target" ]] && {
@@ -1288,6 +1382,9 @@ cmd_backup() {
     exit 1
   }
   local DB_CONTAINER="supabase_db_${PROJECT_ID}"
+  load_operation_state
+  ops_begin "$WORKDIR" "$PROJECT_ID" backup ||
+    fail "Backup işlem kilidi veya state kaydı oluşturulamadı"
 
   local VOLUMES=()
   local vol
@@ -1308,10 +1405,14 @@ cmd_backup() {
 
   local TS
   TS=$(date +%Y-%m-%d-%H%M%S)
-  local BACKUP_PATH="${OUTPUT_DIR}/${TS}"
+  local FINAL_BACKUP_PATH="${OUTPUT_DIR}/${TS}"
+  local BACKUP_PATH="${OUTPUT_DIR}/.${TS}.incomplete.$$"
   mkdir -p "$OUTPUT_DIR"
-  mkdir "$BACKUP_PATH" || fail "Backup dizini oluşturulamadı veya zaten var: $BACKUP_PATH"
+  mkdir "$BACKUP_PATH" || fail "Backup staging dizini oluşturulamadı veya zaten var: $BACKUP_PATH"
+  INCOMPLETE_BACKUP_PATH="$BACKUP_PATH"
   mkdir -p "${BACKUP_PATH}"/{database,volumes,functions,config,metadata,security}
+  ops_data backup_staging "$BACKUP_PATH"
+  ops_phase collecting
 
   local CLI_VERSION PG_VERSION
   CLI_VERSION=$(supabase --version 2> /dev/null | head -1 | awk '{print $NF}')
@@ -1363,6 +1464,17 @@ cmd_backup() {
     exit 1
   fi
 
+  [[ ! -e "$FINAL_BACKUP_PATH" ]] ||
+    fail "Nihai backup dizini zaten var: $FINAL_BACKUP_PATH"
+  mv "$BACKUP_PATH" "$FINAL_BACKUP_PATH" ||
+    fail "Backup atomik olarak yayınlanamadı"
+  BACKUP_PATH="$FINAL_BACKUP_PATH"
+  INCOMPLETE_BACKUP_PATH=""
+  ops_data backup_path "$BACKUP_PATH"
+  ops_phase verified
+  mirror_backup "$BACKUP_PATH"
+  ops_finish committed
+
   # ───── 8. Bitiş özeti ─────
   local total_bytes
   total_bytes=$(du -sb "$BACKUP_PATH" 2> /dev/null | awk '{print $1}')
@@ -1393,7 +1505,7 @@ cmd_backup() {
 }
 
 main() {
-  trap restart_snapshot_stack EXIT
+  trap backup_exit EXIT
   parse_args "$@"
 
   case "$MODE" in

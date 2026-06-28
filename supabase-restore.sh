@@ -117,6 +117,13 @@ ALL_COMPONENTS=false
 ASSUME_YES=false
 DO_PRE_BACKUP=true
 ALLOW_PROJECT_MISMATCH=false
+RESTORE_MUTATION_STARTED=false
+RESTORE_RECOVERY_ACTIVE=false
+RESTORE_RECOVERY_SUCCEEDED=false
+PRE_RESTORE_BACKUP_PATH=""
+RESTORE_WORKDIR=""
+RESTORE_EXECUTABLE="${SUPABASE_RESTORE_EXECUTABLE:-$0}"
+VOLUME_ARCHIVE_IMAGE="${SUPABASE_VOLUME_ARCHIVE_IMAGE:-ubuntu:24.04}"
 DRY_RUN=false
 VERIFY_PATH=""
 WORKDIR_OVERRIDE=""
@@ -127,6 +134,74 @@ usage() { sed -n '/^# Kullanım:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; }
 fail() {
   err "$*"
   exit 1
+}
+
+load_operation_state() {
+  local script_dir ops_lib health_lib
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ops_lib="${script_dir}/scripts/lib/operation-state.sh"
+  health_lib="${script_dir}/scripts/lib/service-health.sh"
+  [[ -r "$ops_lib" ]] || fail "Operation state library bulunamadı: $ops_lib"
+  [[ -r "$health_lib" ]] || fail "Service health library bulunamadı: $health_lib"
+  # shellcheck source=scripts/lib/operation-state.sh
+  source "$ops_lib"
+  # shellcheck source=scripts/lib/service-health.sh
+  source "$health_lib"
+}
+
+restore_exit() {
+  local status=$?
+
+  if [[ "$status" -ne 0 && "$RESTORE_MUTATION_STARTED" == true &&
+    "$RESTORE_RECOVERY_ACTIVE" != true && -n "$PRE_RESTORE_BACKUP_PATH" ]]; then
+    set +e
+    attempt_restore_recovery
+    set -e
+  fi
+
+  if declare -F ops_mark_exit > /dev/null 2>&1; then
+    if [[ "$RESTORE_RECOVERY_SUCCEEDED" == true ]]; then
+      ops_finish rolled_back || true
+    elif [[ "$status" -ne 0 && "$RESTORE_MUTATION_STARTED" == true &&
+      "${OPS_OWNS_LOCK:-false}" == true ]]; then
+      ops_finish recovery_required || true
+    else
+      ops_mark_exit "$status" || true
+    fi
+  fi
+  return "$status"
+}
+
+# Contract:
+#   Purpose:
+#     Standalone restore mutasyondan sonra başarısız olursa doğrulanmış
+#     pre-restore physical backup'a otomatik döner.
+#   Effects:
+#     Stack'i durdurur ve restore scriptini internal recovery modunda çağırır.
+#   Safety:
+#     Yalnız bu işlem sırasında üretilip doğrulanmış backup path'i kullanılır.
+attempt_restore_recovery() {
+  [[ -n "$PRE_RESTORE_BACKUP_PATH" && -d "$PRE_RESTORE_BACKUP_PATH" ]] || return 1
+
+  RESTORE_RECOVERY_ACTIVE=true
+  warn "Restore başarısız; pre-restore backup ile otomatik recovery başlatılıyor"
+  ops_phase recovering || true
+  (cd "$RESTORE_WORKDIR" && supabase stop --no-backup) > /dev/null 2>&1 || true
+
+  if SUPABASE_RECOVERY_MODE=true "$RESTORE_EXECUTABLE" "$PRE_RESTORE_BACKUP_PATH" \
+    --strategy volume \
+    --no-backup \
+    -y \
+    --workdir "$RESTORE_WORKDIR"; then
+    RESTORE_RECOVERY_SUCCEEDED=true
+    RESTORE_RECOVERY_ACTIVE=false
+    ok "Pre-restore backup otomatik olarak geri yüklendi"
+    return 0
+  fi
+
+  RESTORE_RECOVERY_ACTIVE=false
+  warn "Pre-restore backup otomatik geri yüklenemedi"
+  return 1
 }
 
 need_value() {
@@ -282,7 +357,7 @@ file_hash() { sha256sum "$1" 2> /dev/null | awk '{print $1}'; }
 
 check_requirements() {
   local missing=()
-  for cmd in docker zstd tar bc jq sha256sum; do
+  for cmd in docker zstd tar bc jq sha256sum flock curl; do
     command -v "$cmd" > /dev/null || missing+=("$cmd")
   done
   if ((${#missing[@]} > 0)); then
@@ -659,6 +734,84 @@ selected_list() {
 
 is_selected() { [[ "${COMP_SELECTED[$1]:-false}" == "true" ]]; }
 
+version_major() {
+  local version="$1"
+  [[ "$version" =~ ^([0-9]+) ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+verify_restore_compatibility() {
+  local strategy="$1"
+  local backup_cli="$2"
+  local backup_pg="$3"
+  local db_container="$4"
+  local stack_running="$5"
+  local current_cli current_pg backup_pg_major current_pg_major
+
+  [[ "$strategy" == "volume" || "$strategy" == "hybrid" ]] || return 0
+
+  current_cli=$(supabase --version 2> /dev/null | head -1 | awk '{print $NF}')
+  if [[ -z "$backup_cli" || "$backup_cli" == "?" || "$current_cli" != "$backup_cli" ]]; then
+    err "Volume restore CLI uyumsuz: backup=${backup_cli:-?}, hedef=${current_cli:-?}"
+    err "Önce backup ile aynı CLI sürümünü kurun veya SQL stratejisini kullanın."
+    return 1
+  fi
+
+  if [[ "$stack_running" == true ]]; then
+    current_pg=$(docker exec "$db_container" psql -U postgres -At -c "SHOW server_version;" 2> /dev/null | xargs)
+    backup_pg_major=$(version_major "$backup_pg") || {
+      err "Backup PostgreSQL sürümü okunamıyor: $backup_pg"
+      return 1
+    }
+    current_pg_major=$(version_major "$current_pg") || {
+      err "Hedef PostgreSQL sürümü okunamıyor: $current_pg"
+      return 1
+    }
+    if [[ "$backup_pg_major" != "$current_pg_major" ]]; then
+      err "Volume restore PostgreSQL major uyumsuz: backup=${backup_pg_major}, hedef=${current_pg_major}"
+      return 1
+    fi
+  fi
+}
+
+verify_sql_compatibility() {
+  local backup_path="$1"
+  local backup_pg="$2"
+  local db_container="$3"
+  local current_pg backup_major current_major ext_file available missing
+
+  current_pg=$(docker exec "$db_container" psql -U postgres -At -c "SHOW server_version;" 2> /dev/null | xargs)
+  backup_major=$(version_major "$backup_pg") || {
+    err "Backup PostgreSQL sürümü okunamıyor: $backup_pg"
+    return 1
+  }
+  current_major=$(version_major "$current_pg") || {
+    err "Hedef PostgreSQL sürümü okunamıyor: $current_pg"
+    return 1
+  }
+  if ((current_major < backup_major)); then
+    err "SQL restore daha eski PostgreSQL major sürümüne yapılamaz: backup=${backup_major}, hedef=${current_major}"
+    return 1
+  fi
+
+  ext_file="${backup_path}/metadata/extensions.tsv"
+  [[ -f "$ext_file" ]] || return 0
+  available=$(docker exec "$db_container" psql -U postgres -At -c \
+    "SELECT name FROM pg_available_extensions ORDER BY name;" 2> /dev/null) || {
+    err "Hedef PostgreSQL extension listesi alınamadı"
+    return 1
+  }
+  missing=$(while IFS=$'\t' read -r extension _; do
+    [[ -n "$extension" ]] || continue
+    grep -Fxq "$extension" <<< "$available" || printf '%s\n' "$extension"
+  done < "$ext_file")
+  if [[ -n "$missing" ]]; then
+    err "Hedefte bulunmayan PostgreSQL extension'ları:"
+    printf '%s\n' "$missing" >&2
+    return 1
+  fi
+}
+
 # ╔═══════════════════════════════════════════════════════════════════╗
 # ║  RESTORE PRIMITİVES                                                ║
 # ╚═══════════════════════════════════════════════════════════════════╝
@@ -697,11 +850,13 @@ restore_volume() {
     --label "com.supabase.cli.project=${project_id}" \
     "$vol_name" > /dev/null
 
-  # Arşivi volume'a aç (alpine geçici container)
-  if ! docker run --rm \
-    -v "${vol_name}:/dest" \
-    -v "${archive}:/backup.tar.zst:ro" \
-    alpine:latest sh -c "cd /dest && apk add --no-cache zstd >/dev/null 2>&1 && zstd -dc /backup.tar.zst | tar -xf -" 2> /dev/null; then
+  # GNU tar ile ownership, ACL ve Storage xattr metadata'sını geri yükle.
+  if ! zstd -dc "$archive" 2> /dev/null |
+    docker run --rm -i \
+      -v "${vol_name}:/dest" \
+      "$VOLUME_ARCHIVE_IMAGE" \
+      tar --xattrs --xattrs-include='*' --acls --numeric-owner \
+      -xpf - -C /dest 2> /dev/null; then
     err "    Arşiv açma başarısız"
     return 1
   fi
@@ -978,6 +1133,10 @@ cmd_restore() {
     exit 1
   }
   local DB_CONTAINER="supabase_db_${PROJECT_ID}"
+  RESTORE_WORKDIR="$WORKDIR"
+  load_operation_state
+  ops_begin "$WORKDIR" "$PROJECT_ID" restore ||
+    fail "Restore işlem kilidi veya state kaydı oluşturulamadı"
   info "Proje: ${B}${PROJECT_ID}${R} ${D}(${WORKDIR})${R}"
 
   # Yedek bul
@@ -1011,16 +1170,13 @@ cmd_restore() {
   step "Manifest doğrulaması"
   if ! verify_manifest_hashes "$BACKUP_PATH" > /dev/null 2>&1; then
     err "Yedek bütünlüğü bozuk!"
-    if $ASSUME_YES; then
-      err "-y modunda bozuk manifest ile devam edilmez"
-      exit 1
-    fi
-    if ! confirm "Yine de devam edilsin mi? (çok riskli)" "n"; then
-      exit 1
-    fi
+    err "Bozuk manifest hiçbir modda bypass edilemez"
+    exit 1
   else
     ok "Tüm sha256'lar geçerli"
   fi
+  ops_data restore_backup "$BACKUP_PATH"
+  ops_phase backup_verified
 
   # Stack durumu
   local STACK_RUNNING=false
@@ -1031,9 +1187,27 @@ cmd_restore() {
     info "Stack: ${D}çalışmıyor${R}"
   fi
 
+  local TARGET_HAS_DATA=false
+  if $STACK_RUNNING || docker volume inspect "supabase_db_${PROJECT_ID}" > /dev/null 2>&1; then
+    TARGET_HAS_DATA=true
+  fi
+  if ! $DRY_RUN && $TARGET_HAS_DATA && ! $DO_PRE_BACKUP &&
+    [[ "${SUPABASE_RECOVERY_MODE:-false}" != true ]]; then
+    err "Mevcut hedef verisi pre-restore backup olmadan değiştirilemez"
+    exit 1
+  fi
+  if ! $DRY_RUN && $TARGET_HAS_DATA && $DO_PRE_BACKUP && ! $STACK_RUNNING; then
+    info "Pre-restore backup için mevcut stack başlatılıyor"
+    start_stack_and_wait "$WORKDIR" "$DB_CONTAINER" || exit 1
+    STACK_RUNNING=true
+  fi
+
   # Strateji seç
   pick_strategy
   info "Strateji: ${B}${STRATEGY}${R}"
+  verify_restore_compatibility \
+    "$STRATEGY" "$BACKUP_CLI" "$BACKUP_PG" "$DB_CONTAINER" "$STACK_RUNNING" ||
+    exit 1
 
   # Bileşenleri keşfet + default + flag + interaktif
   discover_components "$BACKUP_PATH"
@@ -1082,6 +1256,7 @@ cmd_restore() {
     err "İptal"
     exit 0
   fi
+  ops_phase plan_confirmed
 
   # ───── Pre-restore yedek ─────
   if $DO_PRE_BACKUP; then
@@ -1098,11 +1273,19 @@ cmd_restore() {
         info "Çalıştırılıyor: ${D}${BACKUP_SCRIPT} --quiet${R}"
         local pre_args=(--quiet)
         [[ -n "$WORKDIR_OVERRIDE" ]] && pre_args+=(--workdir "$WORKDIR_OVERRIDE")
-        if "$BACKUP_SCRIPT" "${pre_args[@]}"; then
-          ok "Pre-restore yedek alındı"
+        local pre_out pre_path
+        if pre_out="$("$BACKUP_SCRIPT" "${pre_args[@]}" 2>&1)"; then
+          pre_path=$(sed -n 's/^BACKUP_PATH=//p' <<< "$pre_out" | tail -1)
+          [[ -n "$pre_path" && -d "$pre_path" ]] ||
+            fail "Pre-restore backup dizini doğrulanamadı"
+          "$BACKUP_SCRIPT" --verify "$pre_path" > /dev/null ||
+            fail "Pre-restore backup bütünlük kontrolü başarısız"
+          PRE_RESTORE_BACKUP_PATH="$pre_path"
+          ops_data pre_restore_backup "$pre_path"
+          ok "Pre-restore yedek doğrulandı: $pre_path"
         else
           err "Pre-restore yedek başarısız"
-          if ! confirm "Yedeksiz devam edilsin mi?" "n"; then exit 1; fi
+          exit 1
         fi
       fi
     fi
@@ -1126,6 +1309,8 @@ cmd_restore() {
     if (cd "$WORKDIR" && supabase stop --no-backup); then
       ok "Stack durduruldu, volume'lar serbest"
       RESTARTED=true
+      RESTORE_MUTATION_STARTED=true
+      ops_phase stack_stopped
     else
       err "Stack durdurulamadı"
       exit 1
@@ -1135,6 +1320,8 @@ cmd_restore() {
   # ───── Volume restore ─────
   if is_selected "db" || is_selected "storage" || is_selected "edge"; then
     step "Volume restore"
+    RESTORE_MUTATION_STARTED=true
+    ops_phase restoring
 
     is_selected "db" &&
       restore_volume "supabase_db_${PROJECT_ID}" "${BACKUP_PATH}/volumes/db.tar.zst" "$PROJECT_ID"
@@ -1149,11 +1336,15 @@ cmd_restore() {
   # ───── Functions / Config (DB-bağımsız) ─────
   if is_selected "functions"; then
     step "Edge Functions restore"
+    RESTORE_MUTATION_STARTED=true
+    ops_phase restoring
     restore_functions "$BACKUP_PATH" "$WORKDIR"
   fi
 
   if is_selected "config"; then
     step "Config restore"
+    RESTORE_MUTATION_STARTED=true
+    ops_phase restoring
     restore_config "$BACKUP_PATH" "$WORKDIR"
   fi
 
@@ -1170,6 +1361,9 @@ cmd_restore() {
       err "DB container hazır değil"
       exit 1
     fi
+    verify_sql_compatibility "$BACKUP_PATH" "$BACKUP_PG" "$DB_CONTAINER" || exit 1
+    RESTORE_MUTATION_STARTED=true
+    ops_phase restoring
     restore_sql "$BACKUP_PATH" "$DB_CONTAINER" || exit 1
   fi
 
@@ -1200,7 +1394,7 @@ cmd_restore() {
   if ! $HEALTH_CHECKED; then
     :
   elif docker exec "$DB_CONTAINER" psql -U postgres -t -c "SELECT 1;" > /dev/null 2>&1; then
-    local pg_v table_n user_n bucket_n
+    local pg_v table_n user_n bucket_n expected_tables expected_users expected_buckets
     pg_v=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c "SHOW server_version;" 2> /dev/null | xargs)
     table_n=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
       "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2> /dev/null | xargs)
@@ -1208,9 +1402,26 @@ cmd_restore() {
       "SELECT count(*) FROM auth.users;" 2> /dev/null | xargs)
     bucket_n=$(docker exec "$DB_CONTAINER" psql -U postgres -At -c \
       "SELECT count(*) FROM storage.buckets;" 2> /dev/null | xargs)
-    ok "DB sağlıklı ${D}(PG ${pg_v})${R}"
+    expected_tables=$(jq -r '.stats.public_tables // empty' "$mfst")
+    expected_users=$(jq -r '.stats.auth_users // empty' "$mfst")
+    expected_buckets=$(jq -r '.stats.storage_buckets // empty' "$mfst")
+
+    if [[ (-n "$expected_tables" && "$table_n" != "$expected_tables") ||
+      (-n "$expected_users" && "$user_n" != "$expected_users") ||
+      (-n "$expected_buckets" && "$bucket_n" != "$expected_buckets") ]]; then
+      err "Restore veri sayıları manifest ile uyuşmuyor"
+      detail "Beklenen: tablo=${expected_tables:-?}, kullanıcı=${expected_users:-?}, bucket=${expected_buckets:-?}"
+      detail "Gerçek:    tablo=${table_n:-?}, kullanıcı=${user_n:-?}, bucket=${bucket_n:-?}"
+    else
+      if supabase_service_health "$WORKDIR"; then
+        HEALTH_OK=true
+        ops_phase health_verified
+        ok "DB, Auth, REST ve Storage sağlıklı ${D}(PG ${pg_v})${R}"
+      else
+        err "Supabase servis health probe başarısız"
+      fi
+    fi
     info "  ${table_n:-0} public tablo, ${user_n:-0} kullanıcı, ${bucket_n:-0} bucket"
-    HEALTH_OK=true
   else
     err "DB ping başarısız"
   fi
@@ -1233,10 +1444,14 @@ cmd_restore() {
   fi
   echo
   detail "Sorun olursa: pre-restore yedek aynı dizinde, ${B}supabase-restore --latest${R} ile geri dönebilirsiniz"
+  if ! $HEALTH_CHECKED || $HEALTH_OK; then
+    ops_finish committed
+  fi
   ! $HEALTH_CHECKED || $HEALTH_OK
 }
 
 main() {
+  trap restore_exit EXIT
   parse_args "$@"
 
   case "$MODE" in

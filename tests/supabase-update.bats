@@ -12,6 +12,9 @@ setup() {
 
   mkdir -p "$TEST_HOME" "$FAKE_BIN" "$FAKE_STATE" "$SCRIPT_DIR"
   cp "$REAL_SCRIPT" "$SCRIPT"
+  mkdir -p "$SCRIPT_DIR/scripts/lib"
+  cp "$REPO_ROOT/scripts/lib/operation-state.sh" "$SCRIPT_DIR/scripts/lib/"
+  cp "$REPO_ROOT/scripts/lib/service-health.sh" "$SCRIPT_DIR/scripts/lib/"
   chmod +x "$SCRIPT"
 
   printf '2.99.0\n' > "$FAKE_STATE/supabase-version"
@@ -33,7 +36,10 @@ case "${1:-}" in
     printf '%s\n' "$(cat "${FAKE_STATE}/supabase-version")"
     ;;
   status)
-    [[ "$(cat "${FAKE_STATE}/stack-running")" == "true" ]]
+    [[ "$(cat "${FAKE_STATE}/stack-running")" == "true" ]] || exit 1
+    if [[ "$*" == *"-o json"* ]]; then
+      printf '{"API_URL":"http://127.0.0.1:54321","SERVICE_ROLE_KEY":"test-key"}\n'
+    fi
     ;;
   stop)
     printf 'false\n' > "${FAKE_STATE}/stack-running"
@@ -57,7 +63,9 @@ case "${1:-}" in
     printf 'amd64\n'
     ;;
   -i)
-    printf '%s\n' "$(cat "${FAKE_STATE}/latest-version")" > "${FAKE_STATE}/supabase-version"
+    package="${2:-}"
+    version="$(basename "$package" | sed -nE 's/^supabase_([0-9.]+)_linux_.*/\1/p')"
+    printf '%s\n' "${version:-$(cat "${FAKE_STATE}/latest-version")}" > "${FAKE_STATE}/supabase-version"
     ;;
   *)
     printf 'unexpected fake dpkg command: %s\n' "$*" >&2
@@ -88,10 +96,11 @@ done
 if [[ -n "$out" ]]; then
   printf 'fake deb\n' > "$out"
 elif [[ "$*" == *"/releases/tags/"* ]]; then
+  requested="$(sed -nE 's#.*releases/tags/v([0-9.]+).*#\1#p' <<< "$*")"
   digest="$(printf 'fake deb\n' | sha256sum | awk '{print $1}')"
   [[ -f "${FAKE_STATE}/bad-digest" ]] && digest="deadbeef"
   printf '{"assets":[{"name":"supabase_%s_linux_amd64.deb","digest":"sha256:%s"}]}\n' \
-    "$(cat "${FAKE_STATE}/latest-version")" "$digest"
+    "$requested" "$digest"
 else
   printf '{"tag_name":"v%s"}\n' "$(cat "${FAKE_STATE}/latest-version")"
 fi
@@ -115,6 +124,7 @@ case "${1:-}" in
   exec)
     query="${*: -1}"
     if [[ "$query" == "SELECT 1;" ]]; then
+      [[ ! -f "${FAKE_STATE}/health-fail" ]]
       exit 0
     elif [[ "$query" == "SHOW server_version;" ]]; then
       printf ' 15.8\n'
@@ -137,6 +147,9 @@ make_fake_helpers() {
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'backup %s\n' "$*" >> "${FAKE_LOG}"
+if [[ "${1:-}" == "--verify" ]]; then
+  exit 0
+fi
 backup_dir="${FAKE_STATE}/supabase-backups/backup-001"
 mkdir -p "$backup_dir"
 printf 'BACKUP_PATH=%s\n' "$backup_dir"
@@ -150,6 +163,15 @@ printf '[OK] restore called: %s\n' "$*"
 EOF
 
   chmod +x "$SCRIPT_DIR"/supabase-*.sh
+}
+
+make_running_project() {
+  local project="${1:-$BATS_TEST_TMPDIR/project}"
+  local project_id="${2:-project}"
+  mkdir -p "$project/supabase"
+  printf 'project_id = "%s"\n' "$project_id" > "$project/supabase/config.toml"
+  printf 'true\n' > "$FAKE_STATE/stack-running"
+  printf '%s\n' "$project"
 }
 
 run_update() {
@@ -202,8 +224,9 @@ log_contains() {
 
 @test "downloaded package must match release SHA-256" {
   touch "$FAKE_STATE/bad-digest"
+  project="$(make_running_project)"
 
-  run_update --no-backup -y --no-start
+  run_update --workdir "$project" -y
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"SHA-256 degeri release metadata ile uyusmuyor"* ]]
@@ -221,8 +244,9 @@ log_contains() {
 
 @test "--force reinstalls when version is already current" {
   printf '2.99.0\n' > "$FAKE_STATE/latest-version"
+  project="$(make_running_project)"
 
-  run_update --tag v2.99.0 --force --no-backup -y --no-start
+  run_update --tag v2.99.0 --force --workdir "$project" -y
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"[WARN] Surum ayni ama --force verildi"* ]]
@@ -257,22 +281,22 @@ log_contains() {
   ! log_contains "sudo dpkg"
 }
 
-@test "--no-backup --no-start updates CLI without stack operations" {
-  run_update --no-backup -y --no-start
+@test "update rejects backup and restart bypass flags" {
+  project="$(make_running_project)"
 
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"CLI:    2.99.0 -> 2.102.0"* ]]
-  log_contains "sudo dpkg -i"
-  ! log_contains "backup "
-  ! log_contains "supabase stop"
-  ! log_contains "supabase start"
+  run_update --workdir "$project" --no-backup -y
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--no-backup kullanılamaz"* ]]
+  ! log_contains "sudo dpkg"
+
+  run_update --workdir "$project" --no-start -y
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--no-start kullanılamaz"* ]]
+  ! log_contains "sudo dpkg"
 }
 
 @test "--workdir passes backup workdir, stops and starts running stack" {
-  project="$BATS_TEST_TMPDIR/project"
-  mkdir -p "$project/supabase"
-  printf 'project_id = "project"\n' > "$project/supabase/config.toml"
-  printf 'true\n' > "$FAKE_STATE/stack-running"
+  project="$(make_running_project)"
 
   run_update --workdir "$project" -y
 
@@ -284,25 +308,25 @@ log_contains() {
   [[ "$output" == *"Durum:  saglikli, calisiyor"* ]]
 }
 
-@test "--reset stops stack with --no-backup and reports reset mode" {
-  project="$BATS_TEST_TMPDIR/project"
-  mkdir -p "$project/supabase"
-  printf 'project_id = "project"\n' > "$project/supabase/config.toml"
-  printf 'true\n' > "$FAKE_STATE/stack-running"
+@test "--reset requires restore-after and completes destructive recovery flow" {
+  project="$(make_running_project)"
 
-  run_update --workdir "$project" --reset --no-backup -y --no-start
+  run_update --workdir "$project" --reset -y
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--reset yalnızca --restore-after"* ]]
+  ! log_contains "supabase stop --no-backup"
+
+  run_update --workdir "$project" --reset --restore-after latest -y
 
   [ "$status" -eq 0 ]
   log_contains "supabase stop --no-backup"
-  ! log_contains "supabase start"
+  log_contains "supabase start"
+  log_contains "restore --latest"
   [[ "$output" == *"Mod:    --reset (DB temizlendi)"* ]]
 }
 
 @test "--restore-after runs only after healthy started stack" {
-  project="$BATS_TEST_TMPDIR/project"
-  mkdir -p "$project/supabase"
-  printf 'project_id = "project"\n' > "$project/supabase/config.toml"
-  printf 'true\n' > "$FAKE_STATE/stack-running"
+  project="$(make_running_project)"
 
   run_update --workdir "$project" --restore-after latest -y
 
@@ -312,10 +336,7 @@ log_contains() {
 }
 
 @test "current CLI still runs restore-after without reinstalling" {
-  project="$BATS_TEST_TMPDIR/renamed-directory"
-  mkdir -p "$project/supabase"
-  printf 'project_id = "configured-project"\n' > "$project/supabase/config.toml"
-  printf 'true\n' > "$FAKE_STATE/stack-running"
+  project="$(make_running_project "$BATS_TEST_TMPDIR/renamed-directory" configured-project)"
 
   run_update --workdir "$project" --tag v2.99.0 --restore-after latest -y
 
@@ -326,12 +347,17 @@ log_contains() {
   ! log_contains "sudo dpkg"
 }
 
-@test "--restore-after is skipped when stack is not healthy" {
-  run_update --restore-after latest --no-backup -y --no-start
+@test "--restore-after fails when stack is not healthy" {
+  project="$(make_running_project)"
+  touch "$FAKE_STATE/health-fail"
+  run_update --workdir "$project" --restore-after latest -y
 
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Stack saglikli degil, restore-after atlandi"* ]]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Update sonrası başlangıç sağlık kontrolü başarısız"* ]]
   ! log_contains "restore --latest"
+  [[ "$output" == *"Otomatik recovery tamamlandı"* ]]
+  [ "$(cat "$FAKE_STATE/supabase-version")" = "2.99.0" ]
+  [ "$(jq -r '.status' "$project/.supabase-ops/current.json")" = "rolled_back" ]
 }
 
 @test "script can be sourced without executing main" {

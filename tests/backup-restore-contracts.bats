@@ -23,7 +23,7 @@ setup() {
 }
 
 @test "backup missing option values fail cleanly" {
-  for option in --workdir --output --verify --older-than; do
+  for option in --workdir --output --mirror --mirror-key-file --verify --older-than; do
     run env HOME="$TEST_HOME" "$REPO_ROOT/supabase-backup.sh" "$option"
     [ "$status" -eq 1 ]
     [[ "$output" == *"${option} değer ister"* ]]
@@ -43,6 +43,75 @@ setup() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"${option} değer ister"* ]]
   done
+}
+
+@test "backup mirror is copied, verified, and atomically published" {
+  source_dir="$BATS_TEST_TMPDIR/source/backup-001"
+  mirror_dir="$BATS_TEST_TMPDIR/mirror"
+  key_file="$BATS_TEST_TMPDIR/mirror.key"
+  gnupg_home="$BATS_TEST_TMPDIR/gnupg"
+  fake_bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$source_dir" "$gnupg_home" "$fake_bin"
+  chmod 700 "$gnupg_home"
+  printf 'payload\n' > "$source_dir/file.txt"
+  printf 'correct horse battery staple\n' > "$key_file"
+  chmod 600 "$key_file"
+  cat > "$fake_bin/gpg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"--symmetric"* ]]; then
+  output=""
+  while (($#)); do
+    if [[ "$1" == "--output" ]]; then
+      output="$2"
+      break
+    fi
+    shift
+  done
+  cat > "$output"
+elif [[ "$*" == *"--decrypt"* ]]; then
+  cat "${*: -1}"
+fi
+EOF
+  chmod +x "$fake_bin/gpg"
+
+  run env GNUPGHOME="$gnupg_home" PATH="$fake_bin:$PATH" bash -c "
+    source '$REPO_ROOT/supabase-backup.sh'
+    MIRROR_DIR='$mirror_dir'
+    MIRROR_KEY_FILE='$key_file'
+    ops_data() { :; }
+    mirror_backup '$source_dir'
+  "
+
+  [ "$status" -eq 0 ]
+  [ -f "$mirror_dir/backup-001.tar.gpg" ]
+  run env GNUPGHOME="$gnupg_home" PATH="$fake_bin:$PATH" bash -c "
+    gpg --batch --quiet --pinentry-mode loopback --passphrase-file '$key_file' \
+      --decrypt '$mirror_dir/backup-001.tar.gpg' |
+      tar -xOf - backup-001/file.txt
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "payload" ]
+  [ -z "$(find "$mirror_dir" -maxdepth 1 -name '.*.incomplete.*' -print -quit)" ]
+}
+
+@test "backup mirror rejects a broadly readable encryption key" {
+  source_dir="$BATS_TEST_TMPDIR/source/backup-001"
+  key_file="$BATS_TEST_TMPDIR/mirror.key"
+  mkdir -p "$source_dir"
+  printf 'payload\n' > "$source_dir/file.txt"
+  printf 'secret\n' > "$key_file"
+  chmod 644 "$key_file"
+
+  run bash -c "
+    source '$REPO_ROOT/supabase-backup.sh'
+    MIRROR_DIR='$BATS_TEST_TMPDIR/mirror'
+    MIRROR_KEY_FILE='$key_file'
+    mirror_backup '$source_dir'
+  "
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"chmod 600"* ]]
 }
 
 @test "restore rejects invalid strategy before side effects" {
@@ -197,6 +266,70 @@ EOF
   [ "$output" = "sql" ]
 }
 
+@test "SQL compatibility rejects downgrade and unavailable extensions" {
+  fake_bin="$BATS_TEST_TMPDIR/bin"
+  backup_path="$BATS_TEST_TMPDIR/backup"
+  mkdir -p "$fake_bin" "$backup_path/metadata"
+  printf 'missing_ext\t1.0\n' > "$backup_path/metadata/extensions.tsv"
+
+  cat > "$fake_bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"SHOW server_version;"* ]]; then
+  printf '%s\n' "${TARGET_PG:-15.8}"
+elif [[ "$*" == *"pg_available_extensions"* && "$*" == *"missing_ext"* ]]; then
+  exit 0
+fi
+EOF
+  chmod +x "$fake_bin/docker"
+
+  run env PATH="$fake_bin:$PATH" TARGET_PG=15.8 bash -c "
+    source '$REPO_ROOT/supabase-restore.sh'
+    verify_sql_compatibility '$backup_path' 17.1 db
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"daha eski PostgreSQL major"* ]]
+
+  run env PATH="$fake_bin:$PATH" TARGET_PG=17.1 bash -c "
+    source '$REPO_ROOT/supabase-restore.sh'
+    verify_sql_compatibility '$backup_path' 17.1 db
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"bulunmayan PostgreSQL extension"* ]]
+}
+
+@test "standalone restore recovery invokes verified pre-restore backup" {
+  fake_bin="$BATS_TEST_TMPDIR/bin"
+  fake_log="$BATS_TEST_TMPDIR/recovery.log"
+  backup_path="$BATS_TEST_TMPDIR/pre-backup"
+  workdir="$BATS_TEST_TMPDIR/project"
+  recovery="$BATS_TEST_TMPDIR/recovery-helper"
+  mkdir -p "$fake_bin" "$backup_path" "$workdir"
+
+  cat > "$fake_bin/supabase" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  cat > "$recovery" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$FAKE_LOG"
+EOF
+  chmod +x "$fake_bin/supabase" "$recovery"
+
+  run env PATH="$fake_bin:$PATH" FAKE_LOG="$fake_log" bash -c "
+    source '$REPO_ROOT/supabase-restore.sh'
+    PRE_RESTORE_BACKUP_PATH='$backup_path'
+    RESTORE_WORKDIR='$workdir'
+    RESTORE_EXECUTABLE='$recovery'
+    ops_phase() { :; }
+    attempt_restore_recovery
+    [[ \"\$RESTORE_RECOVERY_SUCCEEDED\" == true ]]
+  "
+
+  [ "$status" -eq 0 ]
+  grep -Fq "$backup_path --strategy volume --no-backup -y --workdir $workdir" "$fake_log"
+}
+
 @test "backup restore dry-run rejects dumps with too few objects" {
   fake_bin="$BATS_TEST_TMPDIR/bin"
   backup_path="$BATS_TEST_TMPDIR/backup"
@@ -263,16 +396,29 @@ EOF
 set -euo pipefail
 printf 'supabase %s\n' "$*" >> "$FAKE_LOG"
 case "${1:-}" in
-  status) exit 1 ;;
-  start) exit 0 ;;
+  status)
+    [[ -f "${FAKE_LOG}.started" ]] || exit 1
+    if [[ "$*" == *"-o json"* ]]; then
+      printf '{"API_URL":"http://127.0.0.1:54321","SERVICE_ROLE_KEY":"test-key"}\n'
+    fi
+    ;;
+  start) touch "${FAKE_LOG}.started" ;;
   *) exit 0 ;;
 esac
+EOF
+
+  cat > "$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
 EOF
 
   cat > "$fake_bin/docker" << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'docker %s\n' "$*" >> "$FAKE_LOG"
+if [[ "${1:-}" == "volume" && "${2:-}" == "inspect" ]]; then
+  exit 1
+fi
 if [[ "${1:-}" == "exec" ]]; then
   if [[ "$*" == *"pg_restore"* ]]; then
     cat >/dev/null
@@ -299,7 +445,7 @@ else
 fi
 EOF
 
-  chmod +x "$fake_bin/supabase" "$fake_bin/docker" "$fake_bin/zstd"
+  chmod +x "$fake_bin/supabase" "$fake_bin/docker" "$fake_bin/zstd" "$fake_bin/curl"
   : > "$fake_log"
 
   run env PATH="$fake_bin:$PATH" FAKE_LOG="$fake_log" HOME="$BATS_TEST_TMPDIR/home" \

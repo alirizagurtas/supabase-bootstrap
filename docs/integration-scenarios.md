@@ -12,6 +12,7 @@ unit/contract     fake command Bats testleri
 scenario matrix   fixture veri + fake Docker/Supabase ile hizli acceptance testleri
 integration       disposable Supabase stack ile gercek backup/restore drill
 recovery drill    manuel veya scheduled disaster-recovery provasi
+CLI update drill  iki gercek CLI surumu ile update ve zorlanmis rollback
 ```
 
 Bu repo icin gunluk hizli kontrol:
@@ -45,6 +46,12 @@ Gercek stack drill:
 
 ```bash
 ./scripts/integration-scenario.sh --scenario all
+```
+
+Gercek CLI update ve recovery drill:
+
+```bash
+./scripts/cli-update-drill.sh --scenario all
 ```
 
 Debug icin gecici proje ve backup dosyalarini tut:
@@ -115,22 +122,44 @@ Kapsam:
 - Disposable stack ve fake DB verisi olusturur.
 - Backup alir.
 - Canli DB state'ini bozar.
-- `supabase-restore.sh --strategy volume --components db` calistirir.
+- `supabase-restore.sh --strategy volume --components db,storage` calistirir.
 - DB volume restore sonrasi baseline satirlarin geri geldigini dogrular.
+- Storage canary nesnesinin byte icerigini geri okur.
+- Ownership, ACL ve extended attribute metadata'sini physical volume arşivinde korur.
+- Backup mirror'ini gecici 0600 anahtarla sifreler ve decrypt/tar testiyle dogrular.
 
 Bu senaryo su bug siniflarini yakalar:
 
 - Docker volume archive/extract hatalari.
+- Storage extended attribute kaybi (`ENODATA`) ve object byte uyusmazligi.
 - Stack stop/start sirasi hatalari.
 - Proje id -> volume name esleme hatalari.
 
-## Scenario 4: Full release drill
+## Scenario 4: Gercek CLI update ve recovery
+
+Komut:
+
+```bash
+./scripts/cli-update-drill.sh --scenario all
+```
+
+Kapsam:
+
+- Resmi CLI 2.107.0 ve 2.108.0 `.deb` paketlerini GitHub digest bilgisiyle dogrular.
+- Host `/usr/bin` kurulumuna dokunmadan gercek binary'lerle disposable stack baslatir.
+- Backup, stop, CLI degisimi, start ve health zincirini calistirir.
+- Basarili update sonrasinda CLI surumunu ve DB test satirini dogrular.
+- Ikinci senaryoda hedef CLI'nin ilk `start` cagrisini bilerek bozar.
+- Eski CLI, physical backup, `rolled_back` journal ve korunmus DB satirini dogrular.
+
+## Scenario 5: Full release drill
 
 Komut:
 
 ```bash
 ./scripts/check.sh --strict
 ./scripts/integration-scenario.sh --scenario all
+./scripts/cli-update-drill.sh --scenario all
 ```
 
 Ne zaman calisir:
@@ -153,6 +182,7 @@ Scheduled veya manuel release CI:
 ```bash
 ./scripts/check.sh --strict
 ./scripts/integration-scenario.sh --scenario all
+./scripts/cli-update-drill.sh --scenario all
 ```
 
 Integration senaryosu Docker ve Supabase image indirme, container health check ve port binding beklemeleri gerektirebilir. Bu yuzden her commit'te degil, scheduled/manual job olarak calistirmak daha dogrudur. Gunluk guven icin `tests/scenario-matrix.bats` daha hizli ve daha deterministiktir.
@@ -166,5 +196,8 @@ Product-ready kabul icin minimum:
 - ShellSpec source guard tests pass.
 - SQL stopped-stack integration scenario pass.
 - Volume integration scenario pass.
+- Storage object byte round-trip pass.
+- Sifreli mirror decrypt/tar kontrolu pass.
+- Gercek CLI update ve injected-failure recovery drill pass.
 - SQL restore logu hata halinde son 100 satiriyla raporlanmali.
 - En az bir kez `--keep` ile uretilen backup manifest elle incelenmis olmali.

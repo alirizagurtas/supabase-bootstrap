@@ -76,3 +76,13 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 - Full SQL dumps/restores must preserve ownership and ACL metadata. Restore Supabase-managed objects with `supabase_admin`; `postgres` is not superuser in current local stacks.
 - Do not run `pg_restore --clean` over an initialized Supabase database. Restore into an empty temporary DB first, then swap database names only after restore succeeds.
 - Recreated Docker volumes must retain both `com.docker.compose.project` and `com.supabase.cli.project` labels so Supabase cleanup can manage them.
+- Update, backup, restore, and reset must share the project operation lock and persistent journal; nested helper calls reuse the parent operation context.
+- CLI update is also a CLI-managed stack image update. It requires a running stack, verified backup, successful stop/start, and post-update health verification.
+- A failed update after stack stop must attempt old-CLI plus physical-backup recovery; interrupted update journals remain recoverable through the explicit recovery path.
+- Manifest integrity failures are never interactive overrides. Volume restore requires compatible CLI/PG state; SQL restore must reject downgrade and unavailable extensions.
+- Backups are built in hidden staging directories and atomically published. Configured mirror targets must be independently verified before success.
+- Reset requires a verified backup and must never run global `docker system prune -a --volumes`.
+- CLI updates mutate a host-global binary, so they require both the host-global update lock and the project operation lock.
+- Physical volume archives must use GNU tar with ownership, ACL, and all xattrs preserved; Storage object bytes depend on extended attributes.
+- Configured mirror backups must be encrypted with a private 0600 key file, decrypt-tested, and SHA-256 verified after atomic publication.
+- Release validation must include both `scripts/integration-scenario.sh --scenario all` and `scripts/cli-update-drill.sh --scenario all`.

@@ -22,6 +22,8 @@ KEEP=false
 SCENARIO="smoke"
 WORK_ROOT=""
 BACKUP_ROOT=""
+MIRROR_ROOT=""
+MIRROR_KEY_FILE=""
 SCENARIO_PROJECT=""
 declare -a CREATED_ROOTS=()
 declare -a CREATED_PROJECTS=()
@@ -135,8 +137,12 @@ prepare_project() {
 
   WORK_ROOT=$(mktemp -d "/tmp/otonorm-${label}.XXXXXX")
   BACKUP_ROOT="$WORK_ROOT/backups"
+  MIRROR_ROOT="$WORK_ROOT/mirror"
+  MIRROR_KEY_FILE="$WORK_ROOT/mirror.key"
   CREATED_ROOTS+=("$WORK_ROOT")
-  mkdir -p "$BACKUP_ROOT"
+  mkdir -p "$BACKUP_ROOT" "$MIRROR_ROOT"
+  openssl rand -hex 32 > "$MIRROR_KEY_FILE"
+  chmod 600 "$MIRROR_KEY_FILE"
 
   local project="$WORK_ROOT/scenario_${label}_project"
   mkdir -p "$project"
@@ -181,6 +187,46 @@ query_scalar() {
   docker exec "$db_container" psql -U postgres -d postgres -At -c "$sql" | xargs
 }
 
+storage_credentials() {
+  local project="$1"
+  local status_json
+
+  status_json=$(cd "$project" && supabase status -o json)
+  STORAGE_API_URL=$(jq -r '.API_URL' <<< "$status_json")
+  STORAGE_SERVICE_KEY=$(jq -r '.SERVICE_ROLE_KEY' <<< "$status_json")
+  [[ "$STORAGE_API_URL" == http* && -n "$STORAGE_SERVICE_KEY" ]]
+}
+
+upload_storage_canary() {
+  local project="$1"
+  local content="$2"
+
+  storage_credentials "$project"
+  curl -fsS \
+    -H "apikey: $STORAGE_SERVICE_KEY" \
+    -H "Authorization: Bearer $STORAGE_SERVICE_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"id":"integration-drill","name":"integration-drill","public":false}' \
+    "${STORAGE_API_URL}/storage/v1/bucket" > /dev/null 2>&1 || true
+  curl -fsS \
+    -H "apikey: $STORAGE_SERVICE_KEY" \
+    -H "Authorization: Bearer $STORAGE_SERVICE_KEY" \
+    -H "Content-Type: text/plain" \
+    -H "x-upsert: true" \
+    --data-binary "$content" \
+    "${STORAGE_API_URL}/storage/v1/object/integration-drill/canary.txt" > /dev/null
+}
+
+download_storage_canary() {
+  local project="$1"
+
+  storage_credentials "$project"
+  curl -fsS \
+    -H "apikey: $STORAGE_SERVICE_KEY" \
+    -H "Authorization: Bearer $STORAGE_SERVICE_KEY" \
+    "${STORAGE_API_URL}/storage/v1/object/authenticated/integration-drill/canary.txt"
+}
+
 seed_data() {
   local project="$1"
 
@@ -205,13 +251,29 @@ take_backup() {
   local project="$1"
 
   log "STEP" "backup"
-  "$ROOT_DIR/supabase-backup.sh" --quiet --workdir "$project" --output "$BACKUP_ROOT" > /dev/null
+  "$ROOT_DIR/supabase-backup.sh" \
+    --quiet \
+    --workdir "$project" \
+    --output "$BACKUP_ROOT" \
+    --mirror "$MIRROR_ROOT" \
+    --mirror-key-file "$MIRROR_KEY_FILE" > /dev/null
 
   local backup_path
   backup_path=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' | sort | tail -1)
   [[ -n "$backup_path" && -f "$backup_path/manifest.json" ]] || fail "Backup manifest not found"
 
   jq -e '.files["database/full-cluster.dump.zst"].sha256 | length > 0' "$backup_path/manifest.json" > /dev/null
+  local mirror_path mirror_list
+  mirror_path="${MIRROR_ROOT}/$(basename "$backup_path").tar.gpg"
+  mirror_list="${WORK_ROOT}/mirror-list.txt"
+  [[ -s "$mirror_path" ]] || fail "Encrypted mirror backup not found"
+  gpg --batch --quiet --pinentry-mode loopback \
+    --passphrase-file "$MIRROR_KEY_FILE" \
+    --decrypt "$mirror_path" |
+    tar -tf - > "$mirror_list" ||
+    fail "Encrypted mirror backup validation failed"
+  grep -Fq "$(basename "$backup_path")/manifest.json" "$mirror_list" ||
+    fail "Encrypted mirror manifest not found"
   log "OK" "backup created: $(basename "$backup_path")"
   printf '%s\n' "$backup_path"
 }
@@ -290,12 +352,15 @@ run_smoke_scenario() {
 }
 
 run_volume_scenario() {
-  local project backup_path count restore_log
+  local project backup_path count storage_content restore_log
   prepare_project "volume"
   project="$SCENARIO_PROJECT"
   seed_data "$project"
+  log "STEP" "seed Storage canary"
+  upload_storage_canary "$project" "storage-before-backup"
   backup_path=$(take_backup "$project")
   corrupt_live_state "$project"
+  upload_storage_canary "$project" "storage-after-backup"
 
   log "STEP" "restore db volume"
   restore_log="$WORK_ROOT/volume-restore.log"
@@ -303,8 +368,7 @@ run_volume_scenario() {
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy volume \
-    --components db \
-    --no-backup \
+    --components db,storage \
     -y > "$restore_log" 2>&1; then
     tail -100 "$restore_log" >&2
     fail "Volume restore failed; log: $restore_log"
@@ -312,8 +376,12 @@ run_volume_scenario() {
 
   count=$(query_scalar "$project" "SELECT count(*) FROM public.integration_notes WHERE marker = 'baseline';")
   [[ "$count" == "3" ]] || fail "Volume restore did not recover baseline rows"
+  storage_content=$(download_storage_canary "$project")
+  [[ "$storage_content" == "storage-before-backup" ]] ||
+    fail "Volume restore did not recover Storage object bytes"
 
   log "OK" "volume restore recovered DB rows"
+  log "OK" "volume restore recovered Storage object bytes"
 }
 
 main() {
@@ -324,6 +392,8 @@ main() {
   need_cmd jq
   need_cmd supabase
   need_cmd zstd
+  need_cmd gpg
+  need_cmd openssl
 
   case "$SCENARIO" in
     smoke) run_smoke_scenario ;;

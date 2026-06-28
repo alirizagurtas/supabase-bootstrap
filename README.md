@@ -47,6 +47,14 @@ Daha sıkı release/refactor kontrolü:
 - Fiziksel Docker volume snapshot’ı sırasında stack kısa süreliğine durdurulur ve işlem sonunda yeniden başlatılır.
 - Non-interactive restore için güvenli varsayılan `sql` stratejisidir. Fiziksel volume restore açıkça `--strategy volume` ile seçilmelidir.
 - `project_id`, dizin adından değil `supabase/config.toml` içinden okunur.
+- Update, backup, restore ve reset aynı proje kilidini ve kalıcı işlem journal'ını kullanır. CLI update ayrıca host-global kilit alır.
+- Update öncesi doğrulanmış backup ile stop/start zorunludur; `--no-backup` ve `--no-start` update akışında reddedilir.
+- Update yarıda kalırsa `supabase-update.sh --recover --workdir <proje>` journal'daki backup ile recovery dener.
+- İkinci failure-domain için `supabase-backup.sh --mirror <dir> --mirror-key-file <0600-key>` kullanılır. Eşdeğer ortam değişkenleri `SUPABASE_BACKUP_MIRROR` ve `SUPABASE_BACKUP_KEY_FILE` değerleridir.
+- Physical volume arşivleri ownership, ACL ve Storage extended attribute metadata'sını korur.
+
+Kanonik yaşam döngüsü ve kod uygunluk tablosu:
+`docs/cli-managed-lifecycle-decision-tree.md`
 
 `--strict`, tüm shell scriptlerde ShellCheck style seviyesini ve shfmt drift'ini bloklar.
 
@@ -70,6 +78,7 @@ Ağır release/drill senaryoları manuel/scheduled çalıştırılmalıdır:
 
 ```bash
 ./scripts/integration-scenario.sh --scenario all
+./scripts/cli-update-drill.sh --scenario all
 ```
 
 Detaylar: `docs/integration-scenarios.md`
@@ -350,16 +359,16 @@ Docker genel temizliği yapılmaz.
 
 Bu seçenek projeyi yeniden clone etmek istediğinde kullanılır.
 
-### 3. Tam Docker temizliği + proje klasörünü sil
+### 3. Supabase proje ve kullanıcı verilerini temizle
 
 ```txt
 supabase stop --no-backup çalışır.
 Hedef proje klasörü silinir.
-docker system prune -a --volumes çalışır.
-Kullanılmayan Docker image/container/network/volume verileri silinir.
+İstenirse ~/.supabase klasörü silinir.
+Global Docker prune çalıştırılmaz.
 ```
 
-Bu seçenek yıkıcıdır. Docker volume içindeki veriler silinebilir.
+Bu seçenek yıkıcıdır; işlem öncesinde doğrulanmış backup zorunludur.
 
 ### 4. Çıkış
 
@@ -367,17 +376,9 @@ Hiçbir işlem yapmadan çıkar.
 
 ## Reset uyarısı
 
-`supabase db reset` local veritabanını sıfırlar. Elle eklediğin local veriler silinir. Sadece seed dosyalarında olan veriler geri gelir.
-
-Canlı / production veritabanında reset kullanılmaz.
-
-Canlı ortamda doğru yöntem:
-
-```txt
-migration üret
-local/staging test et
-db push ile canlıya uygula
-```
+`supabase db reset` veritabanını sıfırlar. Elle eklenen veriler silinir ve
+migration/seed dosyaları yeniden uygulanır. Reset scripti başlamadan önce tam
+backup alır ve bütünlüğünü doğrular.
 
 ## Güvenlik
 

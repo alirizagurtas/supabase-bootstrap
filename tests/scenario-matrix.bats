@@ -95,8 +95,14 @@ make_fake_commands() {
 set -euo pipefail
 printf 'supabase %s\n' "$*" >> "$FAKE_LOG"
 case "${1:-}" in
+  --version)
+    printf '2.102.0\n'
+    ;;
   status)
-    [[ "$(cat "$STATE/stack-running")" == "true" ]]
+    [[ "$(cat "$STATE/stack-running")" == "true" ]] || exit 1
+    if [[ "$*" == *"-o json"* ]]; then
+      printf '{"API_URL":"http://127.0.0.1:54321","SERVICE_ROLE_KEY":"test-key"}\n'
+    fi
     ;;
   start)
     printf 'true\n' > "$STATE/stack-running"
@@ -108,6 +114,11 @@ case "${1:-}" in
     exit 0
     ;;
 esac
+EOF
+
+  cat > "$FAKE_BIN/curl" << 'EOF'
+#!/usr/bin/env bash
+exit 0
 EOF
 
   cat > "$FAKE_BIN/docker" << 'EOF'
@@ -134,11 +145,17 @@ case "${1:-}" in
     esac
     ;;
   volume)
-    exit 0
+    case "${2:-}" in
+      inspect) [[ -f "$STATE/volume-exists" ]] ;;
+      rm) rm -f "$STATE/volume-exists" ;;
+      create) touch "$STATE/volume-exists" ;;
+    esac
     ;;
   run)
     if [[ "$*" == *"find /d -type f"* ]]; then
       printf '7\n'
+    elif [[ "$*" == *"tar --xattrs"* ]]; then
+      cat > /dev/null
     fi
     ;;
 esac
@@ -163,6 +180,7 @@ run_restore() {
     PATH="$FAKE_BIN:$PATH" \
     FAKE_LOG="$FAKE_LOG" \
     STATE="$STATE" \
+    SUPABASE_RECOVERY_MODE="${RECOVERY_MODE:-false}" \
     "$REPO_ROOT/supabase-restore.sh" "$BACKUP" \
     --workdir "$PROJECT" \
     --output "$BATS_TEST_TMPDIR/backups" \
@@ -186,9 +204,9 @@ run_restore() {
   run_restore --strategy volume --components db --no-backup -y
 
   [ "$status" -eq 0 ]
-  grep -Fq "docker volume rm supabase_db_project" "$FAKE_LOG"
   grep -Fq "com.supabase.cli.project=project" "$FAKE_LOG"
   grep -Fq "docker volume create --label" "$FAKE_LOG"
+  grep -Fq "tar --xattrs --xattrs-include=* --acls --numeric-owner" "$FAKE_LOG"
   grep -Fq "supabase start" "$FAKE_LOG"
   [[ "$output" == *"RESTORE TAMAMLANDI"* ]]
 }
@@ -224,6 +242,7 @@ run_restore() {
 @test "scenario: failed post-restore health check returns non-zero" {
   printf 'true\n' > "$STATE/stack-running"
   touch "$STATE/fail-after-restore"
+  RECOVERY_MODE=true
 
   run_restore --strategy sql --components sql --no-backup -y
 

@@ -34,6 +34,7 @@
 #   supabase-update --tag v2.99.0         install a specific version
 #   supabase-update --restore <backup-id> restore only, skip upgrade
 #   supabase-update --restore-after <id>  restore after upgrade
+#   supabase-update --recover             resume automatic recovery from journal
 #   supabase-update -y                    answer yes to prompts
 #   supabase-update --workdir <path>      set Supabase project directory
 #   supabase-update --help
@@ -54,6 +55,7 @@ ASSUME_YES=false
 FORCE=false
 NO_START=false
 SKIP_INSTALL=false
+RECOVER=false
 
 TAG_OVERRIDE=""
 WORKDIR_OVERRIDE=""
@@ -87,10 +89,17 @@ BACKUP_LOCATION=""
 HEALTH_OK=false
 PG_VERSION=""
 TABLE_COUNT="?"
+AUTH_USER_COUNT="?"
+BUCKET_COUNT="?"
 RESTORE_AFTER_DONE=false
+RECOVERY_ACTIVE=false
+RECOVERY_ATTEMPTED=false
+RECOVERY_SUCCEEDED=false
 
 TMPDIR=""
 DEB_PATH=""
+OPS_LIB=""
+HEALTH_LIB=""
 
 if [[ -t 1 ]]; then
   R=$'\033[0m'
@@ -155,9 +164,30 @@ on_error() {
 }
 
 cleanup() {
+  local status=$?
+
+  if [[ "$status" -ne 0 && "$STACK_STOPPED" == true &&
+    "$RECOVERY_ACTIVE" != true && "$RECOVERY_ATTEMPTED" != true ]]; then
+    trap - ERR
+    set +e
+    attempt_update_recovery
+    set -e
+  fi
+
   if [[ -n "$TMPDIR" && -d "$TMPDIR" ]]; then
     rm -rf "$TMPDIR"
   fi
+
+  if declare -F ops_mark_exit > /dev/null 2>&1; then
+    if [[ "$RECOVERY_SUCCEEDED" == true ]]; then
+      ops_finish rolled_back || true
+    elif [[ "$status" -ne 0 && "$STACK_STOPPED" == true ]]; then
+      ops_finish recovery_required || true
+    else
+      ops_mark_exit "$status" || true
+    fi
+  fi
+  return "$status"
 }
 
 need_value() {
@@ -212,6 +242,10 @@ parse_args() {
         RESTORE_AFTER_ID="$2"
         shift 2
         ;;
+      --recover)
+        RECOVER=true
+        shift
+        ;;
       -h | --help)
         usage
         exit 0
@@ -230,6 +264,14 @@ init_logging() {
 
 init_paths() {
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  OPS_LIB="${SCRIPT_DIR}/scripts/lib/operation-state.sh"
+  HEALTH_LIB="${SCRIPT_DIR}/scripts/lib/service-health.sh"
+  [[ -r "$OPS_LIB" ]] || fail "Operation state library bulunamadı: $OPS_LIB"
+  [[ -r "$HEALTH_LIB" ]] || fail "Service health library bulunamadı: $HEALTH_LIB"
+  # shellcheck source=scripts/lib/operation-state.sh
+  source "$OPS_LIB"
+  # shellcheck source=scripts/lib/service-health.sh
+  source "$HEALTH_LIB"
 }
 
 require_cmd() {
@@ -239,7 +281,7 @@ require_cmd() {
 require_base_commands() {
   local cmd
 
-  for cmd in curl dpkg sudo file tee jq sha256sum; do
+  for cmd in curl dpkg sudo file tee jq sha256sum flock; do
     require_cmd "$cmd"
   done
 }
@@ -265,11 +307,11 @@ resolve_helpers() {
   BACKUP_SCRIPT="$(find_helper "supabase-backup")"
   RESTORE_SCRIPT="$(find_helper "supabase-restore")"
 
-  if [[ -z "$RESTORE_ID" && "$BACKUP" == true && -z "$BACKUP_SCRIPT" ]]; then
+  if [[ -z "$RESTORE_ID" && "$RECOVER" != true && "$BACKUP" == true && -z "$BACKUP_SCRIPT" ]]; then
     fail "supabase-backup.sh bulunamadi. Ayni dizine koyun veya --no-backup kullanin."
   fi
 
-  if [[ -n "$RESTORE_ID$RESTORE_AFTER_ID" && -z "$RESTORE_SCRIPT" ]]; then
+  if [[ (-n "$RESTORE_ID$RESTORE_AFTER_ID" || "$RECOVER" == true) && -z "$RESTORE_SCRIPT" ]]; then
     fail "supabase-restore.sh bulunamadi. Ayni dizine koyun: ${SCRIPT_DIR}/supabase-restore.sh"
   fi
 }
@@ -333,6 +375,34 @@ handle_restore_only() {
   fi
 
   exec "$RESTORE_SCRIPT" "${restore_args[@]}"
+}
+
+handle_recovery() {
+  [[ "$RECOVER" == true ]] || return 0
+
+  step "Recovery"
+  WORKDIR="$(detect_workdir)" ||
+    fail "Recovery için Supabase projesi bulunamadı"
+  PROJECT_ID=$(resolve_project_id "$WORKDIR") ||
+    fail "supabase/config.toml içinde project_id bulunamadı"
+  ops_resume "$WORKDIR" "$PROJECT_ID" ||
+    fail "Recovery journal açılamadı"
+  [[ "$OPS_OPERATION" == "update" ]] ||
+    fail "Journal update işlemine ait değil: $OPS_OPERATION"
+
+  CURRENT_VERSION=$(jq -r '.data.current_cli // empty' "$OPS_STATE_FILE")
+  BACKUP_LOCATION=$(jq -r '.data.backup_path // empty' "$OPS_STATE_FILE")
+  ARCH="$(dpkg --print-architecture)"
+  STACK_STOPPED=true
+
+  if attempt_update_recovery; then
+    ops_finish rolled_back
+    ok "Recovery journal tamamlandı"
+    exit 0
+  fi
+
+  ops_finish recovery_required
+  fail "Otomatik recovery tamamlanamadı; manuel müdahale gerekli"
 }
 
 detect_workdir() {
@@ -430,6 +500,21 @@ resolve_target_version() {
   VERSION="${TAG#v}"
 }
 
+validate_update_policy() {
+  [[ -n "$WORKDIR" ]] ||
+    fail "Update için supabase/config.toml içeren bir proje gerekli; yalnız CLI kurulumu için supabase-install.sh kullanın."
+  [[ "$STACK_WAS_RUNNING" == true ]] ||
+    fail "Update çalışan stack üzerinde başlamalı; önce stack'i sağlıklı duruma getirin."
+  [[ "$BACKUP" == true ]] ||
+    fail "Update öncesi doğrulanmış backup zorunludur; --no-backup kullanılamaz."
+  [[ "$NO_START" != true ]] ||
+    fail "Update başarı doğrulaması için stack yeniden başlatılmalıdır; --no-start kullanılamaz."
+
+  if [[ "$RESET" == true && -z "$RESTORE_AFTER_ID" ]]; then
+    fail "--reset yalnızca --restore-after <backup-id|latest> ile kullanılabilir."
+  fi
+}
+
 stop_if_current() {
   if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     return 0
@@ -484,21 +569,8 @@ run_backup() {
 
   step "Yedekleme"
 
-  if [[ "$BACKUP" != true ]]; then
-    warn "--no-backup verildi, yedek atlanacak"
-    if [[ "$RESET" == true ]]; then
-      warn "--reset ile --no-backup veri kaybi riski tasir"
-    fi
-    confirm "Gercekten yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
-    return 0
-  fi
-
-  if [[ "$STACK_WAS_RUNNING" != true ]]; then
-    warn "Stack calismiyor, yedek alinamiyor"
-    detail "Yedeklemek icin: cd ${WORKDIR:-<proje>} && supabase start && supabase-backup"
-    confirm "Yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
-    return 0
-  fi
+  [[ "$BACKUP" == true ]] || fail "Update backup olmadan çalıştırılamaz"
+  [[ "$STACK_WAS_RUNNING" == true ]] || fail "Stack çalışmadığı için zorunlu backup alınamıyor"
 
   if [[ -n "$WORKDIR_OVERRIDE" ]]; then
     backup_args+=(--workdir "$WORKDIR_OVERRIDE")
@@ -511,14 +583,16 @@ run_backup() {
     BACKUP_LOCATION="$(sed -n 's/^BACKUP_PATH=//p' <<< "$backup_out" | tail -1)"
 
     if [[ -z "$BACKUP_LOCATION" || ! -d "$BACKUP_LOCATION" ]]; then
-      warn "Yedek dizini dogrulanamadi: ${BACKUP_LOCATION:-bos}"
-      confirm "Yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
-      BACKUP_DONE=false
+      fail "Yedek dizini doğrulanamadı: ${BACKUP_LOCATION:-boş}"
     fi
+
+    "$BACKUP_SCRIPT" --verify "$BACKUP_LOCATION" > /dev/null ||
+      fail "Update öncesi backup doğrulaması başarısız: $BACKUP_LOCATION"
+    ops_data backup_path "$BACKUP_LOCATION"
+    ops_phase backup_verified
   else
     printf '%s\n' "$backup_out"
-    warn "Yedekleme basarisiz"
-    confirm "Yedeksiz devam edilsin mi?" "n" || fail "Iptal edildi"
+    fail "Zorunlu update backup'ı başarısız"
   fi
 }
 
@@ -548,19 +622,18 @@ stop_stack() {
 
     (cd "$WORKDIR" && supabase stop --no-backup)
     STACK_STOPPED=true
+    ops_phase stack_stopped
     USED_RESET=true
     ok "Stack durduruldu, volume silindi"
     return 0
   fi
 
   info "Stack data korunarak durdurulacak"
-  if confirm "Devam?" "y"; then
-    (cd "$WORKDIR" && supabase stop)
-    STACK_STOPPED=true
-    ok "Stack durduruldu"
-  else
-    warn "Stack durdurulmadi"
-  fi
+  confirm "Devam?" "y" || fail "Stack durdurma reddedildi; CLI değiştirilmeyecek"
+  (cd "$WORKDIR" && supabase stop)
+  STACK_STOPPED=true
+  ops_phase stack_stopped
+  ok "Stack durduruldu"
 }
 
 # Contract:
@@ -633,7 +706,69 @@ install_cli() {
     fail "Aktif supabase surumu ${NEW_VERSION:-bilinmiyor}; hedef ${VERSION}. PATH/binary golgelemesi olabilir."
   fi
 
+  if [[ "$RECOVERY_ACTIVE" == true ]]; then
+    ops_phase recovery_cli_restored
+  else
+    ops_phase cli_installed
+  fi
   ok "Kuruldu: supabase ${NEW_VERSION} (${NEW_BINARY_PATH})"
+}
+
+# Contract:
+#   Purpose:
+#     Stack durdurulduktan sonraki update hatalarında eski CLI ve pre-update
+#     physical backup ile otomatik geri dönüş dener.
+#   Inputs:
+#     CURRENT_VERSION, BACKUP_LOCATION, WORKDIR, RESTORE_SCRIPT
+#   Effects:
+#     CLI paketini eski sürüme döndürebilir, stack volume'larını restore eder.
+#   Safety:
+#     Yalnız doğrulanmış pre-update backup mevcutsa çalışır.
+#   Failure:
+#     Recovery tamamlanamazsa çağıran state'i recovery_required yapar.
+attempt_update_recovery() {
+  local failed_tag="$TAG"
+  local failed_version="$VERSION"
+
+  RECOVERY_ATTEMPTED=true
+  RECOVERY_ACTIVE=true
+  warn "Update tamamlanamadı; otomatik recovery başlatılıyor"
+  ops_phase recovering || true
+
+  if [[ -z "$CURRENT_VERSION" || -z "$BACKUP_LOCATION" || ! -d "$BACKUP_LOCATION" ]]; then
+    warn "Recovery için eski CLI sürümü veya doğrulanmış backup yok"
+    RECOVERY_ACTIVE=false
+    return 1
+  fi
+
+  TAG="v${CURRENT_VERSION}"
+  VERSION="$CURRENT_VERSION"
+  if ! install_cli; then
+    warn "Eski CLI sürümü geri kurulamadı: ${CURRENT_VERSION}"
+    TAG="$failed_tag"
+    VERSION="$failed_version"
+    RECOVERY_ACTIVE=false
+    return 1
+  fi
+
+  (cd "$WORKDIR" && supabase stop --no-backup) > /dev/null 2>&1 || true
+  if ! SUPABASE_RECOVERY_MODE=true "$RESTORE_SCRIPT" "$BACKUP_LOCATION" \
+    --strategy volume \
+    --no-backup \
+    -y \
+    --workdir "$WORKDIR"; then
+    warn "Pre-update backup restore edilemedi: $BACKUP_LOCATION"
+    TAG="$failed_tag"
+    VERSION="$failed_version"
+    RECOVERY_ACTIVE=false
+    return 1
+  fi
+
+  RECOVERY_SUCCEEDED=true
+  RECOVERY_ACTIVE=false
+  ok "Otomatik recovery tamamlandı; eski CLI ve veri geri yüklendi"
+  TAG="$failed_tag"
+  VERSION="$failed_version"
 }
 
 installed_package_binary() {
@@ -711,14 +846,13 @@ start_stack() {
 
   step "Stack baslatma"
 
-  if confirm "'supabase start' calistirilsin mi?" "y"; then
-    info "Dizin: ${WORKDIR}"
-    (cd "$WORKDIR" && supabase start)
-    STACK_STARTED=true
-    ok "Stack baslatildi"
-  else
-    info "Manuel baslatma: cd ${WORKDIR} && supabase start"
-  fi
+  confirm "'supabase start' calistirilsin mi?" "y" ||
+    fail "Stack başlatma reddedildi; update doğrulanamadı"
+  info "Dizin: ${WORKDIR}"
+  (cd "$WORKDIR" && supabase start)
+  STACK_STARTED=true
+  ops_phase stack_started
+  ok "Stack baslatildi"
 }
 
 # Contract:
@@ -730,6 +864,11 @@ start_stack() {
 #     HEALTH_OK, PG_VERSION ve TABLE_COUNT state değişkenlerini günceller.
 health_check() {
   local db_container
+  local unhealthy
+  local verify_expected="${1:-true}"
+  local manifest expected_tables expected_users expected_buckets
+
+  HEALTH_OK=false
 
   if [[ "$STACK_STARTED" != true && ! ("$STACK_WAS_RUNNING" == true && "$STACK_STOPPED" != true) ]]; then
     return 0
@@ -737,11 +876,24 @@ health_check() {
 
   step "Saglik kontrolu"
 
+  if ! (cd "$WORKDIR" && supabase status > /dev/null 2>&1); then
+    warn "supabase status başarısız"
+    return 1
+  fi
+
   if command -v docker > /dev/null 2>&1; then
     info "Calisan Supabase container'lari:"
     docker ps --filter "name=supabase_" \
       --format "  ${GRY}{{.Names}}${R} ${D}{{.Image}}${R} {{.Status}}" ||
       warn "docker ps basarisiz"
+    unhealthy=$(docker ps -a \
+      --filter "label=com.supabase.cli.project=${PROJECT_ID}" \
+      --format '{{.Status}}' |
+      grep -Ec '^(Exited|Dead|Restarting)|\\(unhealthy\\)' || true)
+    if ((unhealthy > 0)); then
+      warn "Başarısız veya unhealthy Supabase container bulundu"
+      return 1
+    fi
   else
     warn "docker bulunamadi, container kontrolu atlandi"
     return 0
@@ -754,10 +906,31 @@ health_check() {
     PG_VERSION="$(docker exec "$db_container" psql -U postgres -t -c "SHOW server_version;" 2> /dev/null | xargs)"
     TABLE_COUNT="$(docker exec "$db_container" psql -U postgres -t -c \
       "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2> /dev/null | xargs)"
+    AUTH_USER_COUNT="$(docker exec "$db_container" psql -U postgres -t -c \
+      "SELECT count(*) FROM auth.users;" 2> /dev/null | xargs)"
+    BUCKET_COUNT="$(docker exec "$db_container" psql -U postgres -t -c \
+      "SELECT count(*) FROM storage.buckets;" 2> /dev/null | xargs)"
+
+    manifest="${BACKUP_LOCATION}/manifest.json"
+    if [[ "$verify_expected" == true && -f "$manifest" ]]; then
+      expected_tables=$(jq -r '.stats.public_tables // empty' "$manifest")
+      expected_users=$(jq -r '.stats.auth_users // empty' "$manifest")
+      expected_buckets=$(jq -r '.stats.storage_buckets // empty' "$manifest")
+      [[ -z "$expected_tables" || "$TABLE_COUNT" == "$expected_tables" ]] ||
+        return 1
+      [[ -z "$expected_users" || "$AUTH_USER_COUNT" == "$expected_users" ]] ||
+        return 1
+      [[ -z "$expected_buckets" || "$BUCKET_COUNT" == "$expected_buckets" ]] ||
+        return 1
+    fi
+
+    supabase_service_health "$WORKDIR" || return 1
     HEALTH_OK=true
-    ok "DB saglikli (PostgreSQL ${PG_VERSION}, ${TABLE_COUNT} public tablo)"
+    ops_phase health_verified
+    ok "DB sağlıklı (PG ${PG_VERSION}, ${TABLE_COUNT} tablo, ${AUTH_USER_COUNT} kullanıcı, ${BUCKET_COUNT} bucket)"
   else
     warn "DB ping basarisiz"
+    return 1
   fi
 }
 
@@ -780,8 +953,7 @@ restore_after() {
   step "Restore after"
 
   if [[ "$HEALTH_OK" != true ]]; then
-    warn "Stack saglikli degil, restore-after atlandi"
-    return 0
+    fail "Stack sağlıklı değil; restore-after çalıştırılamaz"
   fi
 
   if [[ "$RESTORE_AFTER_ID" == "latest" ]]; then
@@ -801,9 +973,10 @@ restore_after() {
   info "Calistiriliyor: ${RESTORE_SCRIPT} ${restore_args[*]}"
   if "$RESTORE_SCRIPT" "${restore_args[@]}"; then
     RESTORE_AFTER_DONE=true
+    ops_phase restore_verified
     ok "Restore-after basarili"
   else
-    warn "Restore-after basarisiz; upgrade tamamlandi"
+    fail "Restore-after başarısız; recovery gerekli"
   fi
 }
 
@@ -871,6 +1044,7 @@ main() {
 
   step "On kontroller"
   require_base_commands
+  handle_recovery
   ARCH="$(dpkg --print-architecture)"
   ok "Bagimliliklar tamam"
   info "Mimari: ${ARCH}"
@@ -882,6 +1056,16 @@ main() {
   stop_if_current
 
   detect_stack
+  validate_update_policy
+  ops_host_lock ||
+    fail "Host-global CLI update kilidi alınamadı"
+  ops_begin "$WORKDIR" "$PROJECT_ID" update ||
+    fail "Update işlem kilidi veya state kaydı oluşturulamadı"
+  ops_data current_cli "${CURRENT_VERSION:-unknown}"
+  ops_data target_cli "$VERSION"
+  ops_data image_inventory "$(docker ps \
+    --filter "label=com.supabase.cli.project=${PROJECT_ID}" \
+    --format '{{.Image}}|{{.ID}}' 2> /dev/null || true)"
   print_plan
   run_backup
   if [[ "$SKIP_INSTALL" != true ]]; then
@@ -889,8 +1073,14 @@ main() {
     install_cli
     start_stack
   fi
-  health_check
-  restore_after
+  if [[ -n "$RESTORE_AFTER_ID" ]]; then
+    health_check false || fail "Update sonrası başlangıç sağlık kontrolü başarısız"
+    restore_after
+    health_check true || fail "Restore sonrası sağlık veya veri kontrolü başarısız"
+  else
+    health_check true || fail "Update sonrası sağlık kontrolü başarısız"
+  fi
+  ops_finish committed
   print_summary
 }
 
