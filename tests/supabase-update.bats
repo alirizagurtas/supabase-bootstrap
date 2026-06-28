@@ -272,6 +272,23 @@ log_contains() {
   log_contains "sudo dpkg -i"
 }
 
+@test "--force rejects an incomplete project with missing config before backup" {
+  mkdir -p "$DIST_ROOT/supabase/.temp"
+
+  run env \
+    HOME="$TEST_HOME" \
+    PATH="$FAKE_BIN:$PATH" \
+    FAKE_STATE="$FAKE_STATE" \
+    FAKE_LOG="$FAKE_LOG" \
+    LOG_FILE="$BATS_TEST_TMPDIR/update.log" \
+    bash -c "cd '$SCRIPT_DIR' && '$SCRIPT' --tag v2.99.0 --force -y"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"config.toml eksik"* ]]
+  ! log_contains "backup "
+  ! log_contains "supabase stop"
+}
+
 @test "--restore delegates to restore helper and skips upgrade" {
   run_update --restore backup-001 -y --workdir "$BATS_TEST_TMPDIR/project"
 

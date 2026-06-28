@@ -21,6 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KEEP=false
 SCENARIO="smoke"
 WORK_ROOT=""
+DRILL_HOME=""
 BACKUP_ROOT=""
 MIRROR_ROOT=""
 MIRROR_KEY_FILE=""
@@ -136,11 +137,13 @@ prepare_project() {
   port_base=$((55400 + RANDOM % 800))
 
   WORK_ROOT=$(mktemp -d "/tmp/otonorm-${label}.XXXXXX")
+  DRILL_HOME="$WORK_ROOT/home"
   BACKUP_ROOT="$WORK_ROOT/backups"
   MIRROR_ROOT="$WORK_ROOT/mirror"
   MIRROR_KEY_FILE="$WORK_ROOT/mirror.key"
   CREATED_ROOTS+=("$WORK_ROOT")
-  mkdir -p "$BACKUP_ROOT" "$MIRROR_ROOT"
+  mkdir -p "$DRILL_HOME" "$BACKUP_ROOT" "$MIRROR_ROOT"
+  export HOME="$DRILL_HOME"
   openssl rand -hex 32 > "$MIRROR_KEY_FILE"
   chmod 600 "$MIRROR_KEY_FILE"
 

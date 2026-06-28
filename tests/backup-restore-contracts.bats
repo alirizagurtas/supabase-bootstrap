@@ -389,6 +389,7 @@ EOF
     "database/full-cluster.dump.zst": {"size": 15, "sha256": "$dump_hash"}
   }
 }
+
 EOF
 
   cat > "$fake_bin/supabase" << 'EOF'
@@ -458,4 +459,15 @@ EOF
   grep -Fq "pg_restore" "$fake_log"
   grep -Fq "pg_restore -U supabase_admin" "$fake_log"
   [[ "$output" == *"RESTORE TAMAMLANDI"* ]]
+}
+
+@test "pre-restore backup uses the selected backup output root" {
+  grep -Fq 'local pre_args=(--quiet --output "$OUTPUT_DIR")' \
+    "$REPO_ROOT/bin/supabase-restore.sh"
+}
+
+@test "automation suppresses secret-bearing supabase start stdout" {
+  grep -Fq 'supabase start > /dev/null' "$REPO_ROOT/bin/supabase-backup.sh"
+  grep -Fq 'supabase start > /dev/null' "$REPO_ROOT/bin/supabase-restore.sh"
+  grep -Fq 'supabase start > /dev/null' "$REPO_ROOT/bin/supabase-update.sh"
 }

@@ -77,6 +77,16 @@ Otomasyonda ancak hedef yollar doğrulandıktan sonra `--yes` kullanılmalıdır
 
 ## CLI ve stack update
 
+Komut proje kökü dışında çalıştırılıyorsa proje yolu açıkça verilmelidir:
+
+```bash
+export SUPABASE_PROJECT_DIR=/srv/supabase/project
+```
+
+`supabase/.temp` bulunduğu halde `supabase/config.toml` yoksa update durur.
+Çalışan container adından config veya proje yolu tahmin edilmez; config önce
+version control ya da güvenilir proje yedeğinden geri yüklenir.
+
 ```bash
 SUPABASE_UPDATE_MIN_BACKUP_FREE_BYTES=10737418240 \
 SUPABASE_UPDATE_MIN_TMP_FREE_BYTES=1073741824 \

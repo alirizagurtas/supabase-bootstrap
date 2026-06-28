@@ -1,1 +1,3 @@
 *.swp
+.supabase-ops/
+supabase/

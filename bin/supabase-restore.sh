@@ -1048,7 +1048,7 @@ start_stack_and_wait() {
   local workdir="$1"
   local db_container="$2"
 
-  if ! (cd "$workdir" && supabase start); then
+  if ! (cd "$workdir" && supabase start > /dev/null); then
     err "Stack başlatılamadı"
     return 1
   fi
@@ -1271,7 +1271,7 @@ cmd_restore() {
         warn "supabase-backup.sh bulunamadı — pre-restore yedek atlanıyor"
       else
         info "Çalıştırılıyor: ${D}${BACKUP_SCRIPT} --quiet${R}"
-        local pre_args=(--quiet)
+        local pre_args=(--quiet --output "$OUTPUT_DIR")
         [[ -n "$WORKDIR_OVERRIDE" ]] && pre_args+=(--workdir "$WORKDIR_OVERRIDE")
         local pre_out pre_path
         if pre_out="$("$BACKUP_SCRIPT" "${pre_args[@]}" 2>&1)"; then

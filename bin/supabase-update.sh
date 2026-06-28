@@ -79,6 +79,7 @@ SHADOWED_BINARY_BACKUP=""
 
 WORKDIR=""
 PROJECT_ID=""
+BROKEN_PROJECT_DIR=""
 STACK_WAS_RUNNING=false
 STACK_STOPPED=false
 STACK_STARTED=false
@@ -410,12 +411,13 @@ handle_recovery() {
 
 detect_workdir() {
   local dir
+  local configured="${WORKDIR_OVERRIDE:-${SUPABASE_PROJECT_DIR:-}}"
 
-  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
-    if [[ ! -f "${WORKDIR_OVERRIDE}/supabase/config.toml" ]]; then
+  if [[ -n "$configured" ]]; then
+    if [[ ! -f "${configured}/supabase/config.toml" ]]; then
       return 1
     fi
-    cd "$WORKDIR_OVERRIDE" && pwd
+    cd "$configured" && pwd
     return 0
   fi
 
@@ -428,6 +430,25 @@ detect_workdir() {
     dir="$(dirname "$dir")"
   done
 
+  return 1
+}
+
+find_incomplete_project() {
+  local dir="$PWD"
+  local repo_root
+  repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+  while [[ "$dir" != "/" ]]; do
+    if [[ -d "$dir/supabase/.temp" && ! -f "$dir/supabase/config.toml" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  if [[ -d "$repo_root/supabase/.temp" && ! -f "$repo_root/supabase/config.toml" ]]; then
+    printf '%s\n' "$repo_root"
+    return 0
+  fi
   return 1
 }
 
@@ -464,7 +485,12 @@ detect_stack() {
       info "Stack: calismiyor"
     fi
   else
-    warn "Supabase projesi bulunamadi"
+    BROKEN_PROJECT_DIR="$(find_incomplete_project || true)"
+    if [[ -n "$BROKEN_PROJECT_DIR" ]]; then
+      warn "Eksik Supabase projesi bulundu: ${BROKEN_PROJECT_DIR}/supabase/config.toml yok"
+    else
+      warn "Supabase projesi bulunamadi; --workdir veya SUPABASE_PROJECT_DIR kullanın"
+    fi
   fi
 }
 
@@ -504,6 +530,8 @@ resolve_target_version() {
 }
 
 validate_update_policy() {
+  [[ -z "$BROKEN_PROJECT_DIR" ]] ||
+    fail "Çalışan stack dosyaları var ancak config.toml eksik: ${BROKEN_PROJECT_DIR}. Önce proje config'ini geri yükleyin; container adından tahmin yapılmayacak."
   [[ -n "$WORKDIR" ]] ||
     fail "Update için supabase/config.toml içeren bir proje gerekli; yalnız CLI kurulumu için supabase-install.sh kullanın."
   [[ "$STACK_WAS_RUNNING" == true ]] ||
@@ -612,9 +640,7 @@ run_backup() {
   [[ "$BACKUP" == true ]] || fail "Update backup olmadan çalıştırılamaz"
   [[ "$STACK_WAS_RUNNING" == true ]] || fail "Stack çalışmadığı için zorunlu backup alınamıyor"
 
-  if [[ -n "$WORKDIR_OVERRIDE" ]]; then
-    backup_args+=(--workdir "$WORKDIR_OVERRIDE")
-  fi
+  backup_args+=(--workdir "$WORKDIR")
 
   info "supabase-backup --quiet calistiriliyor"
   if backup_out="$("$BACKUP_SCRIPT" "${backup_args[@]}" 2>&1)"; then
@@ -889,7 +915,7 @@ start_stack() {
   confirm "'supabase start' calistirilsin mi?" "y" ||
     fail "Stack başlatma reddedildi; update doğrulanamadı"
   info "Dizin: ${WORKDIR}"
-  (cd "$WORKDIR" && supabase start)
+  (cd "$WORKDIR" && supabase start > /dev/null)
   STACK_STARTED=true
   ops_phase stack_started
   ok "Stack baslatildi"
@@ -1093,9 +1119,8 @@ main() {
 
   step "Surum cozumu"
   resolve_target_version
-  stop_if_current
-
   detect_stack
+  stop_if_current
   validate_update_policy
   ops_host_lock ||
     fail "Host-global CLI update kilidi alınamadı"

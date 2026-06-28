@@ -19,7 +19,7 @@ Kontrol edilenler:
 - Bash syntax
 - ShellCheck style seviyesi
 - shfmt
-- 64 Bats davranış testi: PASS
+- 67 Bats davranış testi: PASS
 - 2 ShellSpec örneği: PASS
 - systemd service/timer syntax doğrulaması: PASS
 
@@ -60,3 +60,13 @@ Hetzner aşamasında tamamlanacaklar:
 - Reboot ve güç kesintisi recovery
 - Disk ve backup alarm teslimi
 - Gerçek host CLI update/rollback
+
+## 2026-06-28 operator-stack regression
+
+- `bin/` içinden proje keşfi, `project_id=otonorm` config ile doğrulandı: PASS
+- Gerçek stack üzerinde `supabase-update.sh --force -y`; verified backup,
+  reinstall, stop/start ve health zinciri: PASS
+- Eksik `config.toml` durumunun container adından tahmin edilmeden durması: PASS
+- Disposable drill HOME ve pre-restore backup output izolasyonu: PASS
+- `supabase start` status JSON çıktısının otomasyon loglarından bastırılması: PASS
+- Strict kalite kapısı: 67 Bats + 2 ShellSpec: PASS

@@ -24,7 +24,7 @@ güncellenir.
 | --- | --- |
 | `README.md` | Kurulum, kullanım ve ana güvenlik sözleşmelerini açıklar. |
 | `AGENTS.md` | Bu repository üzerinde çalışan ajanların kalite ve güvenlik kurallarını tanımlar. |
-| `.gitignore` | Editör swap dosyaları gibi makine-yerel geçici dosyaları Git dışında tutar. |
+| `.gitignore` | Editör swap dosyaları, operation journal ve yerel Supabase proje verisini Git dışında tutar. |
 
 ### Kullanıcı komutları
 

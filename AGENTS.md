@@ -97,4 +97,7 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 - Update must pass configurable backup-target and package-staging free-space checks before backup or stack stop.
 - Release recovery validation must include a real SIGKILL interruption followed by the explicit `--recover` path.
 - Automated jobs must preserve the wrapped command exit status; notification hook failure must not hide the original operation failure.
+- Disposable drills must export an isolated HOME; pre-restore backups must honor the caller's `--output` root and never write under the operator's real home.
+- A running stack without `supabase/config.toml` is an incomplete project, not a discoverable update target; never infer destructive scope from container names alone.
+- Supabase `start` stdout may contain status JSON and secrets; suppress stdout in automation while retaining stderr progress and failures.
 - Release validation must include both `scripts/drills/integration-scenario.sh --scenario all` and `scripts/drills/cli-update-drill.sh --scenario all`.

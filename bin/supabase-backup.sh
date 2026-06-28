@@ -226,7 +226,7 @@ resolve_project_id() {
 restart_snapshot_stack() {
   if [[ "$STACK_STOPPED_FOR_SNAPSHOT" == true && -n "$SNAPSHOT_WORKDIR" ]]; then
     warn "Volume snapshot sonrası stack yeniden başlatılıyor"
-    (cd "$SNAPSHOT_WORKDIR" && supabase start) ||
+    (cd "$SNAPSHOT_WORKDIR" && supabase start > /dev/null) ||
       err "Stack otomatik başlatılamadı: $SNAPSHOT_WORKDIR"
   fi
 }
@@ -734,7 +734,7 @@ snapshot_volumes_consistently() {
     snapshot_ok=false
 
   info "  Stack yeniden başlatılıyor..."
-  if ! (cd "$workdir" && supabase start); then
+  if ! (cd "$workdir" && supabase start > /dev/null); then
     err "Volume snapshot sonrası stack başlatılamadı"
     return 1
   fi
