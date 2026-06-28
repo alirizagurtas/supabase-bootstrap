@@ -25,6 +25,8 @@ güncellenir.
 | `README.md` | Kurulum, kullanım ve ana güvenlik sözleşmelerini açıklar. |
 | `AGENTS.md` | Bu repository üzerinde çalışan ajanların kalite ve güvenlik kurallarını tanımlar. |
 | `.gitignore` | Editör swap dosyaları, operation journal ve yerel Supabase proje verisini Git dışında tutar. |
+| `.serena/project.yml` | Serena için Bash dilini, ignore kapsamını ve proje güvenlik başlangıç talimatını tanımlar. |
+| `.serena/.gitignore` | Serena indeks cache'i ile makineye özel ayarları Git dışında tutar. |
 
 ### Kullanıcı komutları
 

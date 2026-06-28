@@ -1,116 +1,62 @@
 # AGENTS.md
 
-## Shell script quality gate
+## Supabase operations skill
 
-This repository is Bash-first. After editing any `.sh` file or shell test, run:
+For backup, restore, update, reset, Docker volume, journal, mirror, retention,
+systemd, recovery drill, or Hetzner lifecycle work, load and follow the
+`supabase-operations` skill. Its safety contracts are mandatory.
+
+## Quality gate
+
+This repository is Bash-first.
 
 ```bash
 ./scripts/check.sh
-```
-
-For legacy cleanup work, run the stricter informational gate:
-
-```bash
 ./scripts/check.sh --strict
 ```
 
-Required local tools:
+- Run the normal gate after any shell or shell-test change.
+- Run `--strict` for broad refactors and release changes.
+- Release evidence also requires:
 
-```txt
-shellcheck
-shfmt
-bats
-shellspec
-checkbashisms
+```bash
+./scripts/drills/integration-scenario.sh --scenario all
+./scripts/drills/cli-update-drill.sh --scenario all
 ```
+
+- Keep real-stack drills manual/scheduled, not in the daily gate.
 
 ## Repository structure
 
-- User-facing commands live in `bin/`.
-- Shared sourced Bash code lives in `lib/`.
-- Development automation lives in `scripts/`; real-stack drills live in `scripts/drills/`.
-- Keep `docs/repository-map.md` synchronized when a version-controlled file is added, moved, removed, or changes responsibility.
+- User commands: `bin/`
+- Shared sourced Bash: `lib/`
+- Development automation: `scripts/`
+- Real-stack drills: `scripts/drills/`
+- Tests: `tests/` and `spec/`
+- Decisions and runbooks: `docs/`
+- Keep `docs/repository-map.md` synchronized with structural changes.
 
-`checkbashisms` is only for POSIX `/bin/sh` scripts. The Supabase scripts are Bash scripts, so Bash syntax is expected.
+## RTK and context
 
-## Test policy
+- Check `rtk help`; use explicit RTK for supported output expected to exceed about 10 lines.
+- Prefer `rtk test`, `rtk err`, `rtk git`, `rtk gh`, `rtk docker`, `rtk psql`, `rtk curl`, `rtk json`, and `rtk log`.
+- Use raw commands only for short/exact evidence or after a filter proves incomplete.
+- Use Serena for symbol-aware code discovery and edits; use `ast-grep` for structural syntax patterns; use `rg` for exact text.
+- Poll long commands no more often than every 30 seconds.
+- After a completed research, implementation, or validation phase, recommend `/compact` before an unrelated phase.
 
-- `bash -n` must pass for all shell scripts.
-- `shellcheck -x -S error` must pass for all shell scripts.
-- `shfmt -d -i 2 -ci -sr` must pass for actively refactored scripts.
-- `bats tests` must pass for behavior tests.
-- `shellspec` runs when a `spec/` directory exists.
+## Critical boundaries
 
-`--strict` must pass before broad refactors or release-style changes.
-
-For normal agent work, `./scripts/check.sh` is the command that must run after changes.
-
-## Agent-readable shell comments
-
-Use comments to document intent and contracts, not obvious syntax. Critical shell functions should have a compact `Contract:` block when they cross a boundary, mutate state, call external systems, or can destroy data.
-
-Required fields for destructive or high-risk functions:
-
-```txt
-Purpose
-Inputs
-Effects
-Safety
-Failure
-```
-
-Avoid line-by-line narration such as "increment counter" or "assign variable"; prefer documenting why the step exists, what state it reads/writes, and what guarantee callers can rely on.
-
-## RTK usage
-
-- Check `rtk help` before shell execution. For supported commands expected to
-  produce more than about 10 lines, explicit RTK usage is the default.
-- Use `rtk test ./scripts/check.sh [--strict]` for the normal quality gate and
-  `rtk err <drill-command>` while iterating; run raw only when complete pass
-  evidence is required for a release report.
-- Prefer `rtk git`, `rtk gh`, `rtk docker`, `rtk psql`, `rtk curl`,
-  `rtk json`, and `rtk log` for repository and Supabase diagnostics.
-- If an `rtk` command produces empty, misleading, or failed output, fall back to a targeted shell command and keep the scope small.
-- Do not use `rtk diff fileA fileB` to inspect repo changes; it compares files. Use `git diff -- file` or a supported RTK repo diff command.
+- `-y` never bypasses integrity or compatibility failures.
+- Resolve destructive scope from canonical `supabase/config.toml` and `project_id`, never basenames.
+- Keep global Docker prune disabled.
+- Physical volume snapshots require a stopped stack and guaranteed restart.
+- A CLI update requires verified backup, stop/start, health verification, and recovery.
+- Keep `supabase/`, `.supabase-ops/`, keys, logs, backups, and temporary drill state out of Git.
 
 ## Supabase MCP
 
-- `supabase-local` points to the loopback CLI endpoint at `http://127.0.0.1:54321/mcp`.
-- Use MCP read-only inspection by default. Do not execute SQL mutations, apply migrations, or change schema/config unless the user explicitly requests that mutation.
-- MCP complements schema/query/debug work; it does not replace backup, restore, update, reset, Docker, journal, or disaster-recovery scripts.
-- Never expose a self-hosted MCP endpoint to the Internet. Hetzner access must use a VPN or SSH tunnel and a separate client entry.
-
-## Bash refactor guardrails
-
-- In `set -e` scripts, helper functions must end with an explicit successful command such as `return 0` when their final operation may be a false `[[ ... ]]`, `grep`, or conditional probe.
-- When passing associative arrays through `declare -n`, pass the original variable name string to nested helpers, not the local nameref variable name. Passing the nameref itself can create circular nameref failures.
-- Add focused behavior tests for every extracted helper that mutates files, calls external commands, or controls destructive restore/update flow.
-- For restore/update scripts, test stopped-stack and running-stack paths separately; stack state changes are common sources of hidden logic bugs.
-- Keep heavy real Supabase stack drills separate from the normal quality gate. Prefer fast Bats scenario fixtures for daily regression coverage; run `scripts/drills/integration-scenario.sh` only as a manual/scheduled release drill.
-- `-y` must never bypass integrity failures. Broken manifests or failed hash checks must stop non-interactive restore before destructive commands.
-- Resolve destructive paths and Supabase `project_id` canonically before stop/remove/volume operations; never trust the raw input path or directory basename.
-- Backup verification must compare every manifest SHA-256 and require the core SQL dumps. Format-only checks are not an integrity gate.
-- Physical Docker volumes must be archived while the stack is stopped. Always restart the stack on both success and failure paths.
-- Backup roots and dump files are sensitive; enforce a private umask instead of relying on the caller environment.
-- Disposable stack port remapping must support both legacy `[inbucket]` and current `[local_smtp]` config sections, plus analytics and pooler ports.
-- Full SQL dumps/restores must preserve ownership and ACL metadata. Restore Supabase-managed objects with `supabase_admin`; `postgres` is not superuser in current local stacks.
-- Do not run `pg_restore --clean` over an initialized Supabase database. Restore into an empty temporary DB first, then swap database names only after restore succeeds.
-- Recreated Docker volumes must retain both `com.docker.compose.project` and `com.supabase.cli.project` labels so Supabase cleanup can manage them.
-- Update, backup, restore, and reset must share the project operation lock and persistent journal; nested helper calls reuse the parent operation context.
-- CLI update is also a CLI-managed stack image update. It requires a running stack, verified backup, successful stop/start, and post-update health verification.
-- A failed update after stack stop must attempt old-CLI plus physical-backup recovery; interrupted update journals remain recoverable through the explicit recovery path.
-- Manifest integrity failures are never interactive overrides. Volume restore requires compatible CLI/PG state; SQL restore must reject downgrade and unavailable extensions.
-- Backups are built in hidden staging directories and atomically published. Configured mirror targets must be independently verified before success.
-- Reset requires a verified backup and must never run global `docker system prune -a --volumes`.
-- CLI updates mutate a host-global binary, so they require both the host-global update lock and the project operation lock.
-- Physical volume archives must use GNU tar with ownership, ACL, and all xattrs preserved; Storage object bytes depend on extended attributes.
-- Configured mirror backups must be encrypted with a private 0600 key file, decrypt-tested, and SHA-256 verified after atomic publication.
-- Mirror import must reject unsafe tar paths and non-regular special entries, then pass normal manifest verification before publication.
-- Retention must handle local and encrypted mirror targets together and preserve a configurable minimum newest-backup count per target.
-- Update must pass configurable backup-target and package-staging free-space checks before backup or stack stop.
-- Release recovery validation must include a real SIGKILL interruption followed by the explicit `--recover` path.
-- Automated jobs must preserve the wrapped command exit status; notification hook failure must not hide the original operation failure.
-- Disposable drills must export an isolated HOME; pre-restore backups must honor the caller's `--output` root and never write under the operator's real home.
-- A running stack without `supabase/config.toml` is an incomplete project, not a discoverable update target; never infer destructive scope from container names alone.
-- Supabase `start` stdout may contain status JSON and secrets; suppress stdout in automation while retaining stderr progress and failures.
-- Release validation must include both `scripts/drills/integration-scenario.sh --scenario all` and `scripts/drills/cli-update-drill.sh --scenario all`.
+- `supabase-local` is `http://127.0.0.1:54321/mcp`.
+- MCP is read-only by default; mutations require explicit user authorization.
+- MCP complements schema/query/debug work and never replaces lifecycle scripts.
+- Hetzner MCP access requires VPN or SSH tunnel; never expose it publicly.
