@@ -38,10 +38,13 @@ This repository is Bash-first.
 
 ## RTK and context
 
-- Check `rtk help`; use explicit RTK for supported output expected to exceed about 10 lines.
-- Prefer `rtk test`, `rtk err`, `rtk git`, `rtk gh`, `rtk docker`, `rtk psql`, `rtk curl`, `rtk json`, and `rtk log`.
-- Use raw commands only for short/exact evidence or after a filter proves incomplete.
-- Use Serena for symbol-aware code discovery and edits; use `ast-grep` for structural syntax patterns; use `rg` for exact text.
+- Follow `docs/agent-tool-routing.md`; validate routing with
+  `./scripts/check-agent-routing.sh`.
+- Use Serena for symbols/references, `ast-grep` for syntax structure, `rg` for
+  exact text, and explicit RTK for supported output expected to exceed about
+  10 lines.
+- Use raw commands for short output, exact integrity evidence, or incomplete
+  filters. Never use `rtk run` or `rtk proxy` for token savings.
 - Poll long commands no more often than every 30 seconds.
 - After a completed research, implementation, or validation phase, recommend `/compact` before an unrelated phase.
 

@@ -51,6 +51,7 @@ güncellenir.
 | Dosya | Görev |
 | --- | --- |
 | `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
+| `scripts/check-agent-routing.sh` | RTK, Serena, ast-grep ve rg araç yönlendirme kurallarını kontrollü fixture ile doğrular. |
 | `scripts/notify-on-failure.sh` | Sardığı komutun hatasını loglar ve yapılandırılmış executable hook'a bildirir. |
 | `scripts/systemd-backup.sh` | systemd environment değerlerini güvenli backup argümanlarına dönüştürür. |
 | `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
@@ -80,6 +81,7 @@ güncellenir.
 | Dosya | Görev |
 | --- | --- |
 | `docs/repository-map.md` | Klasör sözleşmesini ve tüm version-controlled dosyaların görevini listeler. |
+| `docs/agent-tool-routing.md` | RTK, Serena, ast-grep, rg ve ham komut seçim kurallarını ve ölçüm kanıtını tanımlar. |
 | `docs/lifecycle-decision-tree.md` | CLI-managed self-host yaşam döngüsünün canonical karar ağacını ve kod uygunluğunu tutar. |
 | `docs/integration-scenarios.md` | Hızlı testler ile gerçek stack drill'lerinin kapsamını ve komutlarını açıklar. |
 | `docs/operations-runbook.md` | Backup, retention, update, recovery, restore ve systemd işletim adımlarını tanımlar. |
