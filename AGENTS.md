@@ -92,4 +92,9 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 - CLI updates mutate a host-global binary, so they require both the host-global update lock and the project operation lock.
 - Physical volume archives must use GNU tar with ownership, ACL, and all xattrs preserved; Storage object bytes depend on extended attributes.
 - Configured mirror backups must be encrypted with a private 0600 key file, decrypt-tested, and SHA-256 verified after atomic publication.
+- Mirror import must reject unsafe tar paths and non-regular special entries, then pass normal manifest verification before publication.
+- Retention must handle local and encrypted mirror targets together and preserve a configurable minimum newest-backup count per target.
+- Update must pass configurable backup-target and package-staging free-space checks before backup or stack stop.
+- Release recovery validation must include a real SIGKILL interruption followed by the explicit `--recover` path.
+- Automated jobs must preserve the wrapped command exit status; notification hook failure must not hide the original operation failure.
 - Release validation must include both `scripts/drills/integration-scenario.sh --scenario all` and `scripts/drills/cli-update-drill.sh --scenario all`.

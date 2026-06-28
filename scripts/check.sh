@@ -94,6 +94,25 @@ run_checkbashisms() {
   log "OK" "checkbashisms"
 }
 
+run_systemd_verify() {
+  local units=(
+    "$ROOT_DIR/deploy/systemd/supabase-backup@.service"
+    "$ROOT_DIR/deploy/systemd/supabase-backup@.timer"
+  )
+  local output
+
+  [[ -f "${units[0]}" && -f "${units[1]}" ]] || {
+    log "SKIP" "systemd-analyze: no unit templates"
+    return 0
+  }
+  log "STEP" "systemd unit verify"
+  if ! output=$(systemd-analyze verify "${units[@]}" 2>&1); then
+    printf '%s\n' "$output" >&2
+    fail "systemd unit verification failed"
+  fi
+  log "OK" "systemd unit verify"
+}
+
 run_bats() {
   if [[ ! -d "$ROOT_DIR/tests" ]]; then
     log "SKIP" "bats: no tests directory"
@@ -136,11 +155,13 @@ main() {
   require_cmd bats
   require_cmd checkbashisms
   require_cmd shellspec
+  require_cmd systemd-analyze
 
   run_syntax_check
   run_shellcheck
   run_shfmt
   run_checkbashisms
+  run_systemd_verify
   run_bats
   run_shellspec
 

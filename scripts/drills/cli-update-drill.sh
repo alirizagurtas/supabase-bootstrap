@@ -46,7 +46,7 @@ parse_args() {
   while (($#)); do
     case "$1" in
       --scenario)
-        [[ -n "${2:-}" ]] || fail "--scenario requires success|recovery|all"
+        [[ -n "${2:-}" ]] || fail "--scenario requires success|recovery|interrupt|all"
         SCENARIO="$2"
         shift 2
         ;;
@@ -55,7 +55,7 @@ parse_args() {
         shift
         ;;
       -h | --help)
-        echo "Usage: scripts/drills/cli-update-drill.sh [--scenario success|recovery|all] [--keep]"
+        echo "Usage: scripts/drills/cli-update-drill.sh [--scenario success|recovery|interrupt|all] [--keep]"
         exit 0
         ;;
       *)
@@ -63,12 +63,12 @@ parse_args() {
         ;;
     esac
   done
-  [[ "$SCENARIO" =~ ^(success|recovery|all)$ ]] || fail "Invalid scenario: $SCENARIO"
+  [[ "$SCENARIO" =~ ^(success|recovery|interrupt|all)$ ]] || fail "Invalid scenario: $SCENARIO"
 }
 
 need_commands() {
   local command
-  for command in curl jq sha256sum dpkg-deb docker supabase zstd gpg openssl; do
+  for command in curl jq sha256sum dpkg-deb docker supabase zstd gpg openssl setsid; do
     command -v "$command" > /dev/null || fail "Missing command: $command"
   done
 }
@@ -246,12 +246,86 @@ run_update() {
   log OK "injected start failure restored old CLI and physical backup"
 }
 
+run_interrupted_update() {
+  local pid phase=""
+  local state_file="$PROJECT/.supabase-ops/current.json"
+  local status=0
+  local recovered_status=0
+
+  log STEP "start update and kill process group after stack_stopped journal phase"
+  setsid env \
+    HOME="$DRILL_HOME" \
+    PATH="$FAKE_BIN:$PATH" \
+    SUPABASE_OP_HOST_LOCK="$WORK_ROOT/host-update.lock" \
+    LOG_FILE="$WORK_ROOT/interrupted-update.log" \
+    "$ROOT_DIR/bin/supabase-update.sh" \
+    --tag "v${TO_VERSION}" \
+    --workdir "$PROJECT" \
+    -y > "$WORK_ROOT/interrupted-output.log" 2>&1 &
+  pid=$!
+
+  for _ in {1..900}; do
+    if [[ -f "$state_file" ]]; then
+      phase=$(jq -r '.phase // empty' "$state_file")
+      [[ "$phase" == "stack_stopped" ]] && break
+    fi
+    kill -0 "$pid" 2> /dev/null ||
+      break
+    sleep 0.1
+  done
+  [[ "$phase" == "stack_stopped" ]] || {
+    tail -120 "$WORK_ROOT/interrupted-output.log" >&2
+    fail "Update did not reach stack_stopped before interruption"
+  }
+
+  kill -KILL -- "-${pid}" 2> /dev/null || kill -KILL "$pid"
+  set +e
+  wait "$pid"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "Killed update unexpectedly returned success"
+  [[ "$(jq -r '.status' "$state_file")" == "running" ]] ||
+    fail "Killed update journal did not remain running"
+
+  set +e
+  HOME="$DRILL_HOME" \
+    PATH="$FAKE_BIN:$PATH" \
+    SUPABASE_OP_HOST_LOCK="$WORK_ROOT/host-update.lock" \
+    LOG_FILE="$WORK_ROOT/recover.log" \
+    "$ROOT_DIR/bin/supabase-update.sh" \
+    --recover \
+    --workdir "$PROJECT" \
+    -y > "$WORK_ROOT/recover-output.log" 2>&1
+  recovered_status=$?
+  set -e
+  [[ "$recovered_status" -eq 0 ]] || {
+    tail -120 "$WORK_ROOT/recover-output.log" >&2
+    fail "Explicit --recover failed after SIGKILL"
+  }
+  [[ "$(HOME="$DRILL_HOME" PATH="$FAKE_BIN:$PATH" supabase --version)" == "$FROM_VERSION" ]] ||
+    fail "SIGKILL recovery did not restore CLI ${FROM_VERSION}"
+  [[ "$(jq -r '.status' "$state_file")" == "rolled_back" ]] ||
+    fail "SIGKILL recovery journal is not rolled_back"
+  seed_and_verify_data verify
+  log OK "SIGKILL interruption recovered old CLI and physical backup through --recover"
+}
+
 run_scenario() {
   local label="$1"
   local failure="$2"
 
   prepare_drill "$label"
   run_update "$failure"
+  (cd "$PROJECT" && HOME="$DRILL_HOME" PATH="$FAKE_BIN:$PATH" \
+    supabase stop --no-backup > /dev/null)
+  PROJECT=""
+  rm -rf "$WORK_ROOT"
+  WORK_ROOT=""
+}
+
+run_interrupt_scenario() {
+  prepare_drill interrupt
+  run_interrupted_update
   (cd "$PROJECT" && HOME="$DRILL_HOME" PATH="$FAKE_BIN:$PATH" \
     supabase stop --no-backup > /dev/null)
   PROJECT=""
@@ -267,9 +341,11 @@ main() {
   case "$SCENARIO" in
     success) run_scenario success false ;;
     recovery) run_scenario recovery true ;;
+    interrupt) run_interrupt_scenario ;;
     all)
       run_scenario success false
       run_scenario recovery true
+      run_interrupt_scenario
       ;;
   esac
   log OK "CLI update drill passed: $SCENARIO"

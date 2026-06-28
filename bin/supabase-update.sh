@@ -100,6 +100,9 @@ TMPDIR=""
 DEB_PATH=""
 OPS_LIB=""
 HEALTH_LIB=""
+BACKUP_OUTPUT_DIR="${SUPABASE_BACKUP_OUTPUT:-${HOME}/supabase-backups}"
+MIN_BACKUP_FREE_BYTES="${SUPABASE_UPDATE_MIN_BACKUP_FREE_BYTES:-1073741824}"
+MIN_TMP_FREE_BYTES="${SUPABASE_UPDATE_MIN_TMP_FREE_BYTES:-268435456}"
 
 if [[ -t 1 ]]; then
   R=$'\033[0m'
@@ -281,7 +284,7 @@ require_cmd() {
 require_base_commands() {
   local cmd
 
-  for cmd in curl dpkg sudo file tee jq sha256sum flock; do
+  for cmd in curl dpkg sudo file tee jq sha256sum flock df; do
     require_cmd "$cmd"
   done
 }
@@ -515,6 +518,43 @@ validate_update_policy() {
   fi
 }
 
+# Contract:
+#   Purpose:
+#     Backup ve paket staging filesystemlerinde update başlamadan yeterli boş alan olduğunu doğrular.
+#   Inputs:
+#     BACKUP_OUTPUT_DIR, TMPDIR ortamı, MIN_BACKUP_FREE_BYTES, MIN_TMP_FREE_BYTES
+#   Effects:
+#     Yok; yalnızca df ile filesystem bilgisini okur.
+#   Safety:
+#     Eşikler byte cinsinden environment ile yükseltilebilir; geçersiz eşikler reddedilir.
+check_free_space() {
+  local label="$1"
+  local path="$2"
+  local minimum="$3"
+  local probe="$path"
+  local available_kb available_bytes
+
+  [[ "$minimum" =~ ^[0-9]+$ ]] || fail "${label} disk eşiği geçersiz: $minimum"
+  while [[ ! -e "$probe" && "$probe" != "/" ]]; do
+    probe=$(dirname "$probe")
+  done
+  available_kb=$(df -Pk "$probe" | awk 'NR == 2 {print $4}')
+  [[ "$available_kb" =~ ^[0-9]+$ ]] || fail "${label} boş alanı okunamadı: $path"
+  available_bytes=$((available_kb * 1024))
+  ((available_bytes >= minimum)) ||
+    fail "${label} için yetersiz disk alanı: mevcut=${available_bytes} gerekli=${minimum} path=${path}"
+  info "${label} boş alanı uygun: ${available_bytes} byte"
+}
+
+disk_preflight() {
+  step "Disk alanı"
+  check_free_space "Backup hedefi" "$BACKUP_OUTPUT_DIR" "$MIN_BACKUP_FREE_BYTES"
+  check_free_space "Paket staging" "${TMPDIR:-/tmp}" "$MIN_TMP_FREE_BYTES"
+  ops_data backup_free_min "$MIN_BACKUP_FREE_BYTES"
+  ops_data tmp_free_min "$MIN_TMP_FREE_BYTES"
+  ops_phase disk_preflight_passed
+}
+
 stop_if_current() {
   if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     return 0
@@ -564,7 +604,7 @@ print_plan() {
 #   Safety:
 #     Backup kapalıysa veya stack çalışmıyorsa devam etmeden önce onay ister.
 run_backup() {
-  local backup_args=(--quiet)
+  local backup_args=(--quiet --output "$BACKUP_OUTPUT_DIR")
   local backup_out
 
   step "Yedekleme"
@@ -1067,6 +1107,7 @@ main() {
     --filter "label=com.supabase.cli.project=${PROJECT_ID}" \
     --format '{{.Image}}|{{.ID}}' 2> /dev/null || true)"
   print_plan
+  disk_preflight
   run_backup
   if [[ "$SKIP_INSTALL" != true ]]; then
     stop_stack

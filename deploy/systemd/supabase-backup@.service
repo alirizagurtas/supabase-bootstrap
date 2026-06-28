@@ -1,0 +1,24 @@
+[Unit]
+Description=Verified Supabase backup for %i
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=supabase
+Group=supabase
+EnvironmentFile=/etc/supabase-backup/%i.env
+ExecStart=/usr/bin/env /usr/local/lib/supabase-automation/scripts/systemd-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=supabase-backup
+ReadWritePaths=/srv/supabase /var/backups/supabase /mnt/offsite/supabase /var/lib/supabase-backup
+
+[Install]
+WantedBy=multi-user.target

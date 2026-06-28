@@ -135,7 +135,7 @@ Bu senaryo su bug siniflarini yakalar:
 - Stack stop/start sirasi hatalari.
 - Proje id -> volume name esleme hatalari.
 
-## Scenario 4: Gercek CLI update ve recovery
+## Scenario 4: Gercek CLI update, recovery ve interruption
 
 Komut:
 
@@ -151,6 +151,8 @@ Kapsam:
 - Basarili update sonrasinda CLI surumunu ve DB test satirini dogrular.
 - Ikinci senaryoda hedef CLI'nin ilk `start` cagrisini bilerek bozar.
 - Eski CLI, physical backup, `rolled_back` journal ve korunmus DB satirini dogrular.
+- Ucuncu senaryoda update'i `stack_stopped` journal asamasinda SIGKILL ile keser.
+- Acik `--recover` cagrisinin eski CLI, physical backup ve DB satirini geri getirdigini dogrular.
 
 ## Scenario 5: Full release drill
 

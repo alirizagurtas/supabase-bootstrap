@@ -214,3 +214,11 @@ drill'lerde SQL restore, DB+Storage physical restore, Storage byte round-trip,
 sifreli mirror, CLI 2.107.0→2.108.0 update ve injected start-failure recovery
 gecmistir. Host tarafinda mirror hedefinin ve 0600 anahtar dosyasinin
 yapilandirilmasi deployment politikasidir.
+
+2026-06-28 ek operasyon doğrulamaları:
+
+- Backup ve package staging disk preflight: UYUYOR
+- Encrypted mirror import + normal manifest doğrulaması: UYUYOR
+- Local/mirror birleşik retention ve minimum yeni backup koruması: UYUYOR
+- SIGKILL sonrası kalıcı journal ile açık `--recover`: UYUYOR
+- systemd timer ve failure notification hook sözleşmesi: UYUYOR

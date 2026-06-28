@@ -234,6 +234,24 @@ log_contains() {
   ! log_contains "sudo dpkg"
 }
 
+@test "update fails before backup when backup filesystem has insufficient free space" {
+  project="$(make_running_project)"
+
+  run env \
+    HOME="$TEST_HOME" \
+    PATH="$FAKE_BIN:$PATH" \
+    FAKE_STATE="$FAKE_STATE" \
+    FAKE_LOG="$FAKE_LOG" \
+    LOG_FILE="$BATS_TEST_TMPDIR/update.log" \
+    SUPABASE_UPDATE_MIN_BACKUP_FREE_BYTES=999999999999999 \
+    "$SCRIPT" --tag v2.100.0 --workdir "$project" -y
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Backup hedefi için yetersiz disk alanı"* ]]
+  ! log_contains "backup "
+  ! log_contains "supabase stop"
+}
+
 @test "current target version exits without upgrade unless force is set" {
   run_update --tag v2.99.0
 
@@ -302,7 +320,7 @@ log_contains() {
   run_update --workdir "$project" -y
 
   [ "$status" -eq 0 ]
-  log_contains "backup --quiet --workdir $project"
+  log_contains "backup --quiet --output $TEST_HOME/supabase-backups --workdir $project"
   log_contains "supabase stop"
   log_contains "supabase start"
   log_contains "docker exec supabase_db_project"
@@ -342,7 +360,7 @@ log_contains() {
   run_update --workdir "$project" --tag v2.99.0 --restore-after latest -y
 
   [ "$status" -eq 0 ]
-  log_contains "backup --quiet --workdir $project"
+  log_contains "backup --quiet --output $TEST_HOME/supabase-backups --workdir $project"
   log_contains "docker exec supabase_db_configured-project"
   log_contains "restore --latest -y --no-backup --workdir $project"
   ! log_contains "sudo dpkg"

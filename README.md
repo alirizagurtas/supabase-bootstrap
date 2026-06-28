@@ -15,20 +15,28 @@ supabase-bootstrap/
     supabase-reset.sh
     supabase-update.sh
     supabase-backup.sh
+    supabase-backup-maintenance.sh
     supabase-restore.sh
   lib/
     operation-state.sh
     service-health.sh
   scripts/check.sh
+  scripts/notify-on-failure.sh
+  scripts/systemd-backup.sh
   scripts/drills/
     integration-scenario.sh
     cli-update-drill.sh
   tests/
   spec/
   docs/
+  deploy/systemd/
 ```
 
 Eksiksiz dosya envanteri: `docs/repository-map.md`
+
+Production işletim adımları: `docs/operations-runbook.md`
+
+Doğrulama kaydı: `docs/validation-report.md`
 
 ## Geliştirme kontrolleri
 
@@ -56,6 +64,10 @@ Daha sıkı release/refactor kontrolü:
 - Update yarıda kalırsa `bin/supabase-update.sh --recover --workdir <proje>` journal'daki backup ile recovery dener.
 - İkinci failure-domain için `bin/supabase-backup.sh --mirror <dir> --mirror-key-file <0600-key>` kullanılır. Eşdeğer ortam değişkenleri `SUPABASE_BACKUP_MIRROR` ve `SUPABASE_BACKUP_KEY_FILE` değerleridir.
 - Physical volume arşivleri ownership, ACL ve Storage extended attribute metadata'sını korur.
+- Encrypted mirror arşivleri `bin/supabase-backup-maintenance.sh import-mirror` ile güvenli staging alanına alınır ve restore öncesi normal manifest doğrulamasından geçer.
+- Local ve mirror retention aynı bakım komutuyla yürütülür; her hedefte en yeni backup'lar `--keep-min` ile korunur.
+- Update, backup hedefi ve package staging filesystemleri için configurable boş alan preflight uygular.
+- systemd timer ve failure notification hook kurulumu `deploy/systemd/` altında sağlanır.
 
 Kanonik yaşam döngüsü ve kod uygunluk tablosu:
 `docs/lifecycle-decision-tree.md`

@@ -263,17 +263,17 @@ take_backup() {
   [[ -n "$backup_path" && -f "$backup_path/manifest.json" ]] || fail "Backup manifest not found"
 
   jq -e '.files["database/full-cluster.dump.zst"].sha256 | length > 0' "$backup_path/manifest.json" > /dev/null
-  local mirror_path mirror_list
+  local mirror_path imported_output imported_path
   mirror_path="${MIRROR_ROOT}/$(basename "$backup_path").tar.gpg"
-  mirror_list="${WORK_ROOT}/mirror-list.txt"
   [[ -s "$mirror_path" ]] || fail "Encrypted mirror backup not found"
-  gpg --batch --quiet --pinentry-mode loopback \
-    --passphrase-file "$MIRROR_KEY_FILE" \
-    --decrypt "$mirror_path" |
-    tar -tf - > "$mirror_list" ||
-    fail "Encrypted mirror backup validation failed"
-  grep -Fq "$(basename "$backup_path")/manifest.json" "$mirror_list" ||
-    fail "Encrypted mirror manifest not found"
+  imported_output=$("$ROOT_DIR/bin/supabase-backup-maintenance.sh" import-mirror \
+    --archive "$mirror_path" \
+    --key-file "$MIRROR_KEY_FILE" \
+    --output "${WORK_ROOT}/mirror-import") ||
+    fail "Encrypted mirror import failed"
+  imported_path=$(sed -n 's/^BACKUP_PATH=//p' <<< "$imported_output")
+  [[ -f "$imported_path/manifest.json" ]] ||
+    fail "Encrypted mirror import manifest not found"
   log "OK" "backup created: $(basename "$backup_path")"
   printf '%s\n' "$backup_path"
 }

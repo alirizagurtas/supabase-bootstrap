@@ -32,6 +32,7 @@ güncellenir.
 | --- | --- |
 | `bin/supabase-install.sh` | Ubuntu host için Docker, CLI ve gerekli araçları kurar. |
 | `bin/supabase-backup.sh` | SQL, fiziksel volume, config ve function içeren doğrulanmış backup üretir. |
+| `bin/supabase-backup-maintenance.sh` | Encrypted mirror import ve local/mirror retention işlemlerini yönetir. |
 | `bin/supabase-restore.sh` | Backup manifestini doğrular ve seçilen stratejiyle kontrollü restore yapar. |
 | `bin/supabase-update.sh` | CLI-managed stack için backup, update, health check ve recovery akışını yönetir. |
 | `bin/supabase-reset.sh` | Doğrulanmış backup şartıyla proje kapsamındaki temizleme/reset işlemlerini yürütür. |
@@ -48,6 +49,8 @@ güncellenir.
 | Dosya | Görev |
 | --- | --- |
 | `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
+| `scripts/notify-on-failure.sh` | Sardığı komutun hatasını loglar ve yapılandırılmış executable hook'a bildirir. |
+| `scripts/systemd-backup.sh` | systemd environment değerlerini güvenli backup argümanlarına dönüştürür. |
 | `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
 | `scripts/drills/cli-update-drill.sh` | Gerçek CLI sürümleriyle update ve zorlanmış recovery senaryolarını çalıştırır. |
 
@@ -56,6 +59,8 @@ güncellenir.
 | Dosya | Görev |
 | --- | --- |
 | `tests/backup-restore-contracts.bats` | Backup/restore argüman, bütünlük, uyumluluk ve recovery sözleşmelerini test eder. |
+| `tests/backup-maintenance.bats` | Encrypted mirror import ve birleşik retention sözleşmelerini test eder. |
+| `tests/notification.bats` | Failure hook çağrısını ve exit status korumasını test eder. |
 | `tests/operation-state.bats` | Kilit ve işlem journal davranışlarını test eder. |
 | `tests/reset-safety.bats` | Reset/install source güvenliğini ve yıkıcı hedef kontrollerini test eder. |
 | `tests/scenario-matrix.bats` | Disposable senaryo runner'ının fixture tabanlı dallarını test eder. |
@@ -75,6 +80,16 @@ güncellenir.
 | `docs/repository-map.md` | Klasör sözleşmesini ve tüm version-controlled dosyaların görevini listeler. |
 | `docs/lifecycle-decision-tree.md` | CLI-managed self-host yaşam döngüsünün canonical karar ağacını ve kod uygunluğunu tutar. |
 | `docs/integration-scenarios.md` | Hızlı testler ile gerçek stack drill'lerinin kapsamını ve komutlarını açıklar. |
+| `docs/operations-runbook.md` | Backup, retention, update, recovery, restore ve systemd işletim adımlarını tanımlar. |
+| `docs/validation-report.md` | Gerçekleştirilen doğrulamalar ile Hetzner'a bırakılan host kontrollerini kaydeder. |
+
+### Deployment şablonları
+
+| Dosya | Görev |
+| --- | --- |
+| `deploy/systemd/supabase-backup@.service` | Proje bazlı, harden edilmiş systemd backup service şablonudur. |
+| `deploy/systemd/supabase-backup@.timer` | Günlük persistent backup timer şablonudur. |
+| `deploy/systemd/project.env.example` | Service için proje, hedef, mirror, key ve notification environment örneğidir. |
 
 ## Repository dışında kalan çalışma verileri
 
