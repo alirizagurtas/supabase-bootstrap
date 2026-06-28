@@ -63,9 +63,22 @@ Avoid line-by-line narration such as "increment counter" or "assign variable"; p
 
 ## RTK usage
 
-- Use explicit `rtk` for supported commands that read large files or produce meaningful diff/output.
+- Check `rtk help` before shell execution. For supported commands expected to
+  produce more than about 10 lines, explicit RTK usage is the default.
+- Use `rtk test ./scripts/check.sh [--strict]` for the normal quality gate and
+  `rtk err <drill-command>` while iterating; run raw only when complete pass
+  evidence is required for a release report.
+- Prefer `rtk git`, `rtk gh`, `rtk docker`, `rtk psql`, `rtk curl`,
+  `rtk json`, and `rtk log` for repository and Supabase diagnostics.
 - If an `rtk` command produces empty, misleading, or failed output, fall back to a targeted shell command and keep the scope small.
 - Do not use `rtk diff fileA fileB` to inspect repo changes; it compares files. Use `git diff -- file` or a supported RTK repo diff command.
+
+## Supabase MCP
+
+- `supabase-local` points to the loopback CLI endpoint at `http://127.0.0.1:54321/mcp`.
+- Use MCP read-only inspection by default. Do not execute SQL mutations, apply migrations, or change schema/config unless the user explicitly requests that mutation.
+- MCP complements schema/query/debug work; it does not replace backup, restore, update, reset, Docker, journal, or disaster-recovery scripts.
+- Never expose a self-hosted MCP endpoint to the Internet. Hetzner access must use a VPN or SSH tunnel and a separate client entry.
 
 ## Bash refactor guardrails
 

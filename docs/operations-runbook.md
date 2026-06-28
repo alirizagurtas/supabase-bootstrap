@@ -190,5 +190,27 @@ Her release öncesi:
 ./scripts/drills/cli-update-drill.sh --scenario all
 ```
 
+## Supabase MCP
+
+Local CLI-managed stack MCP endpoint'i:
+
+```text
+http://127.0.0.1:54321/mcp
+```
+
+Codex bağlantısı:
+
+```bash
+codex mcp add supabase-local --url http://127.0.0.1:54321/mcp
+codex mcp get supabase-local
+```
+
+MCP yalnız schema/query/debug yardımcısıdır. Backup, restore, update, reset,
+Docker volume veya recovery journal yönetimi lifecycle scriptlerinde kalır.
+SQL/migration/schema mutasyonu açık kullanıcı talebi olmadan yapılmaz.
+
+Self-hosted Hetzner MCP endpoint'i OAuth 2.1 sağlamaz ve internete açılmaz.
+Erişim VPN ya da SSH tunnel üzerinden ayrı bir MCP client kaydıyla yapılır.
+
 Hetzner host devreye alındığında ayrıca temiz-host restore, reboot/power-loss,
 off-host mirror erişimi ve gerçek host update/rollback provası yapılmalıdır.
