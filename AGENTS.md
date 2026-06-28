@@ -40,9 +40,9 @@ This repository is Bash-first.
 
 - Follow `docs/agent-tool-routing.md`; validate routing with
   `./scripts/check-agent-routing.sh`.
-- Use Serena for symbols/references, `ast-grep` for syntax structure, `rg` for
-  exact text, and explicit RTK for supported output expected to exceed about
-  10 lines.
+- Serena MCP is disabled by default; enable it only on explicit user request.
+  Otherwise use `ast-grep` for syntax structure, `rg` for exact text, and
+  explicit RTK for supported output expected to exceed about 10 lines.
 - Use raw commands for short output, exact integrity evidence, or incomplete
   filters. Never use `rtk run` or `rtk proxy` for token savings.
 - Poll long commands no more often than every 30 seconds.

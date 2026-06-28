@@ -75,8 +75,9 @@ ok "rg text and ast-grep structural routes"
 serena project index-file \
   "$ROOT_DIR/bin/supabase-update.sh" \
   "$ROOT_DIR" > /dev/null
-codex mcp get serena > /dev/null
-ok "Serena indexing and Codex MCP registration"
+serena_mcp=$(codex mcp get serena)
+[[ "$serena_mcp" == *"(disabled)"* ]] || fail "Serena MCP must be disabled by default"
+ok "Serena installed/indexable and MCP disabled by default"
 
 rtk verify --require-all > /dev/null
 ok "rtk filters"

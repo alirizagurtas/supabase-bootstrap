@@ -9,17 +9,22 @@ tanımlar. Kuralların çalıştığı şu komutla doğrulanır:
 
 ## Karar sırası
 
-1. Soru bir fonksiyon, symbol, çağıran veya referans hakkındaysa Serena kullan.
-2. Soru kodun sözdizimsel yapısı hakkındaysa `ast-grep` kullan.
+1. Serena MCP varsayılan olarak kapalıdır. Yalnız kullanıcı açıkça Serena
+   istediğinde etkinleştir ve fonksiyon, symbol, çağıran veya referans için kullan.
+2. Serena kapalıyken veya soru kodun sözdizimsel yapısı hakkındaysa `ast-grep`
+   kullan.
 3. Soru düz metin, config, doküman veya hata mesajı hakkındaysa `rg` kullan.
 4. Çalıştırılacak komut yaklaşık 10 satırdan uzun çıktı üretecekse uygun RTK
    filtresini kullan.
 5. Hash, manifest, imza, tam diff veya release kanıtı gerekiyorsa ham ve
    eksiksiz çıktıyı kullan.
 
-Serena karmaşık Bash ifadelerini parse edemezse `ast-grep`, ardından dar
-kapsamlı `rg` kullanılır. Bu araçlar ShellCheck, Bats ve ShellSpec doğrulamasının
-yerini almaz.
+Serena açıkken karmaşık Bash ifadelerini parse edemezse `ast-grep`, ardından
+dar kapsamlı `rg` kullanılır. Bu araçlar ShellCheck, Bats ve ShellSpec
+doğrulamasının yerini almaz.
+
+Serena kurulumu ve proje indeksi korunur; yalnız MCP ve Serena Codex hook'ları
+kapalı tutulur. Böylece gerektiğinde yeniden kurulum yapmadan etkinleştirilebilir.
 
 ## RTK matrisi
 
@@ -62,7 +67,8 @@ dosyası veya mevcut executable üzerinden çalıştır.
 | `./scripts/check.sh --strict` | yaklaşık 1140 token | yaklaşık 42 token | `%96,3` azalma |
 | 555 satırlık `supabase` araması | yaklaşık 12709 token | yaklaşık 4728 token | `%62,8` azalma |
 
-Serena `resolve_helpers` fonksiyonunu ve `main` içindeki çağrısını doğru buldu.
+Serena etkinleştirildiği testte `resolve_helpers` fonksiyonunu ve `main` içindeki
+çağrısını doğru buldu.
 `ast-grep` kontrollü fixture içinde gerçek `rm` komutunu bulurken yorum ve
 `sudo rm` wrapper metnini eşleştirmedi. `rg` aynı fixture içindeki üç metinsel
 geçişi de buldu; bu fark araç seçiminin neden niyete göre yapılması gerektiğini
