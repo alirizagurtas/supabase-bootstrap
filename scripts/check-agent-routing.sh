@@ -19,7 +19,18 @@ fail() {
 }
 
 need_cmd() {
-  command -v "$1" > /dev/null 2>&1 || fail "missing command: $1"
+  if command -v "$1" > /dev/null 2>&1; then
+    return 0
+  fi
+
+  case "$1" in
+    rg)
+      fail "missing command: rg; Ubuntu için kurulum: sudo apt-get install -y ripgrep"
+      ;;
+    *)
+      fail "missing command: $1"
+      ;;
+  esac
 }
 
 for cmd in ast-grep codex rg rtk serena; do

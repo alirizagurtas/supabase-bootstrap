@@ -43,3 +43,41 @@ kullanılır. Fallback sonucu PR üzerinden doğrulanır:
 ```bash
 gh pr view NUM --json title,body,isDraft,state,url
 ```
+
+## `check-agent-routing.sh` `missing command: rg` hatası
+
+### Belirti
+
+Routing doğrulaması şu hatayla durabilir:
+
+```text
+[FAIL] missing command: rg
+```
+
+### Sınıflandırma
+
+Ortam eksikliği. Codex kendi runtime path'i içinde `rg` sağlayabilir; ancak
+kullanıcının normal shell PATH'inde `rg` yoksa repository scripti doğrudan
+çalıştırıldığında komut bulunamaz.
+
+### Fallback / çözüm
+
+Ubuntu üzerinde sistem paketini kur:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ripgrep
+```
+
+Sonra doğrula:
+
+```bash
+command -v rg
+rg --version
+rtk test ./scripts/check-agent-routing.sh
+```
+
+### Kural
+
+`rg` repository doğrulama aracıdır; Codex'in bundled path'ine güvenilmez. Yeni
+makine bootstrap'inde `ripgrep` sistem paketi olarak kurulu olmalıdır.

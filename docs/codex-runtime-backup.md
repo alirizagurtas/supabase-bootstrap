@@ -130,6 +130,11 @@ Beklenen önemli durumlar:
 2. Backup artifact off-host storage'dan indirilir.
 3. `scripts/restore-codex-runtime.sh --archive ... --dry-run` çalıştırılır.
 4. Eksik tool'lar kurulur: `codex`, `rtk`, `uv`, `serena`, `ast-grep`, `rg`, `gh`.
+   Ubuntu üzerinde `rg` için paket adı `ripgrep` olur:
+
+   ```bash
+   sudo apt-get install -y ripgrep
+   ```
 5. `scripts/restore-codex-runtime.sh --archive ... --yes` çalıştırılır.
 6. Restore sonrası doğrulama komutları çalıştırılır.
 7. Gerekirse `codex login` ve GitHub auth tekrar yapılır.
