@@ -60,6 +60,7 @@ güncellenir.
 | `scripts/systemd-backup.sh` | systemd environment değerlerini güvenli backup argümanlarına dönüştürür. |
 | `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
 | `scripts/drills/cli-update-drill.sh` | Gerçek CLI sürümleriyle update ve zorlanmış recovery senaryolarını çalıştırır. |
+| `scripts/drills/codex-runtime-restore-drill.sh` | Fake Codex home ile makine kaybı sonrası backup/restore geri dönüşünü sandbox içinde doğrular. |
 
 ### Bats testleri
 

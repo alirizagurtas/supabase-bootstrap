@@ -124,6 +124,25 @@ Beklenen önemli durumlar:
 - `memories/` ve full modda `sessions/` geri gelmiştir.
 - `auth.json` geri gelmediği için gerekirse `codex login` yeniden yapılır.
 
+## Sandbox felaket drill'i
+
+Gerçek `$HOME/.codex` dizinine dokunmadan uçan makine senaryosu test edilir:
+
+```bash
+./scripts/drills/codex-runtime-restore-drill.sh
+```
+
+Bu drill `/tmp` altında fake Codex home oluşturur, full backup alır, kaynak
+Codex home'u kaybolmuş gibi taşır ve yeni bir Codex home'a restore eder. Sonra
+şunları doğrular:
+
+- `memories/` geri geldi.
+- `sessions/` geri geldi.
+- `AGENTS.md`, `RTK.md`, `docs/`, `skills/` geri geldi.
+- `config.toml` secretsız sanitized içerikten üretildi.
+- `auth.json`, `cache/` ve `plugins/cache/` geri gelmedi.
+- Backup manifestinde `mode=full`, `sessions/` ve checksum bilgisi var.
+
 ## Sıfır makine felaket akışı
 
 1. Yeni Linux/Hetzner makinede repo clone edilir.

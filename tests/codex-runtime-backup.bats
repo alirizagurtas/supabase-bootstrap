@@ -123,3 +123,10 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"Restore yazmak için -y/--yes gerekli"* ]]
 }
+
+@test "sandbox restore drill simulates lost machine recovery" {
+  run "$REPO_ROOT/scripts/drills/codex-runtime-restore-drill.sh"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Codex runtime sandbox backup/restore drill geçti"* ]]
+}

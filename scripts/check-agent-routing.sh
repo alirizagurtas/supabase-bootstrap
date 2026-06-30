@@ -141,6 +141,7 @@ for file in \
   "$ROOT_DIR/docs/codex-runtime-backup.md" \
   "$ROOT_DIR/scripts/backup-codex-runtime.sh" \
   "$ROOT_DIR/scripts/restore-codex-runtime.sh" \
+  "$ROOT_DIR/scripts/drills/codex-runtime-restore-drill.sh" \
   "$ROOT_DIR/templates/codex/AGENTS.md" \
   "$ROOT_DIR/templates/codex/RTK.md" \
   "$ROOT_DIR/templates/codex/config.toml.example"; do
@@ -173,4 +174,7 @@ rg -n '\./scripts/check-agent-routing\.sh' \
 rg -n 'config\.toml\.sanitized' \
   "$ROOT_DIR/scripts/backup-codex-runtime.sh" "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
   fail "Codex runtime backup must use sanitized config"
+rg -n 'Sandbox felaket drill' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing sandbox drill"
 ok "Codex runtime backup/restore discipline documented"
