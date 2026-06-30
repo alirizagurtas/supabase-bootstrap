@@ -16,6 +16,7 @@ güncellenir.
 | `spec/` | ShellSpec testleri |
 | `docs/` | Karar, işletim ve doğrulama dokümantasyonu |
 | `docs/failures/` | Tekrarlanabilir komut hataları ve düşük-token fallback kayıtları |
+| `templates/` | Secretsız bootstrap ve runtime restore şablonları |
 
 ## Dosya envanteri
 
@@ -53,6 +54,8 @@ güncellenir.
 | --- | --- |
 | `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
 | `scripts/check-agent-routing.sh` | RTK, Serena, ast-grep, rg ve uzun test/drill disiplini kurallarını kontrollü fixture ile doğrular. |
+| `scripts/backup-codex-runtime.sh` | Global Codex runtime için memory, session, skill ve secretsız config backup artifact'i üretir. |
+| `scripts/restore-codex-runtime.sh` | Codex runtime backup artifact'ini safety copy alarak restore eder ve araç durumunu raporlar. |
 | `scripts/notify-on-failure.sh` | Sardığı komutun hatasını loglar ve yapılandırılmış executable hook'a bildirir. |
 | `scripts/systemd-backup.sh` | systemd environment değerlerini güvenli backup argümanlarına dönüştürür. |
 | `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
@@ -70,6 +73,7 @@ güncellenir.
 | `tests/scenario-matrix.bats` | Disposable senaryo runner'ının fixture tabanlı dallarını test eder. |
 | `tests/service-health.bats` | Gateway sağlık problarının başarı ve hata davranışlarını test eder. |
 | `tests/supabase-update.bats` | Update, restore delegation, stop/start ve hata akışlarını fake komutlarla test eder. |
+| `tests/codex-runtime-backup.bats` | Codex runtime backup/restore scriptlerinin kapsam, secret dışlama ve dry-run davranışını test eder. |
 
 ### ShellSpec
 
@@ -87,7 +91,16 @@ güncellenir.
 | `docs/integration-scenarios.md` | Hızlı testler ile gerçek stack drill'lerinin kapsamını ve komutlarını açıklar. |
 | `docs/operations-runbook.md` | Backup, retention, update, recovery, restore ve systemd işletim adımlarını tanımlar. |
 | `docs/validation-report.md` | Gerçekleştirilen doğrulamalar ile Hetzner'a bırakılan host kontrollerini kaydeder. |
+| `docs/codex-runtime-backup.md` | Codex runtime memory, session, skill ve config backup/restore kapsamını ve risklerini açıklar. |
 | `docs/failures/known-failures.md` | Tekrarlanabilir komut hatalarını, sınıflandırmasını ve hedefli fallback çözümünü tutar. |
+
+### Codex runtime şablonları
+
+| Dosya | Görev |
+| --- | --- |
+| `templates/codex/AGENTS.md` | Backup artifact yoksa kurulabilecek minimal global Codex kural şablonudur. |
+| `templates/codex/RTK.md` | Backup artifact yoksa kurulabilecek minimal RTK kural şablonudur. |
+| `templates/codex/config.toml.example` | Secretsız Codex config örneğidir; Serena disabled ve Supabase MCP local defaultlarını gösterir. |
 
 ### Deployment şablonları
 

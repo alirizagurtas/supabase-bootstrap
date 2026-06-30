@@ -125,3 +125,41 @@ rg -n 'Hata öğrenme ve fallback disiplini' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing failure fallback matrix"
 ok "failure learning loop documented"
+
+for file in \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" \
+  "$ROOT_DIR/scripts/backup-codex-runtime.sh" \
+  "$ROOT_DIR/scripts/restore-codex-runtime.sh" \
+  "$ROOT_DIR/templates/codex/AGENTS.md" \
+  "$ROOT_DIR/templates/codex/RTK.md" \
+  "$ROOT_DIR/templates/codex/config.toml.example"; do
+  [[ -f "$file" ]] || fail "missing Codex runtime backup file: $file"
+done
+rg -n '[~]/\.codex/memories/' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing memories scope"
+rg -n '[~]/\.codex/sessions/' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing sessions scope"
+rg -n 'auth\.json' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing auth exclusion"
+rg -n 'token, OAuth veya credential state' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing token/OAuth exclusion"
+rg -n 'codex doctor' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing codex doctor verification"
+rg -n 'codex mcp list' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing MCP verification"
+rg -n 'rtk verify --require-all' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing RTK verification"
+rg -n '\./scripts/check-agent-routing\.sh' \
+  "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup doc missing routing verification"
+rg -n 'config\.toml\.sanitized' \
+  "$ROOT_DIR/scripts/backup-codex-runtime.sh" "$ROOT_DIR/docs/codex-runtime-backup.md" > /dev/null ||
+  fail "Codex runtime backup must use sanitized config"
+ok "Codex runtime backup/restore discipline documented"

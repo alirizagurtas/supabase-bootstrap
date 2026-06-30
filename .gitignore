@@ -1,3 +1,5 @@
 *.swp
+codex-runtime-*.tar.gz
+codex-runtime-*/
 .supabase-ops/
 supabase/
