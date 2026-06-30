@@ -1,0 +1,15 @@
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+
+[features]
+memories = true
+hooks = false
+
+[mcp_servers.supabase-local]
+url = "http://127.0.0.1:54321/mcp"
+
+[mcp_servers.serena]
+enabled = false
+startup_timeout_sec = 15
+command = "serena"
+args = ["start-mcp-server", "--context=codex", "--project-from-cwd"]

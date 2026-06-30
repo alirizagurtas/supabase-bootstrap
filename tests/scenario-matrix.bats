@@ -19,6 +19,35 @@ setup() {
   make_fake_commands
 }
 
+@test "integration port remap supports current local_smtp section" {
+  config="$BATS_TEST_TMPDIR/config.toml"
+  cat > "$config" << 'EOF'
+[api]
+port = 54321
+[db]
+port = 54322
+shadow_port = 54320
+[studio]
+port = 54323
+[local_smtp]
+port = 54324
+[db.pooler]
+port = 54329
+[analytics]
+port = 54327
+EOF
+
+  run bash -c "
+    source '$REPO_ROOT/scripts/drills/integration-scenario.sh'
+    configure_random_ports '$config' 56000
+  "
+
+  [ "$status" -eq 0 ]
+  grep -Fq "port = 56000" "$config"
+  grep -Fq "port = 56004" "$config"
+  ! grep -Fq "port = 54324" "$config"
+}
+
 make_project() {
   printf 'project_id = "project"\n' > "$PROJECT/supabase/config.toml"
   printf 'LIVE_SECRET=corrupt\n' > "$PROJECT/.env"
@@ -66,8 +95,14 @@ make_fake_commands() {
 set -euo pipefail
 printf 'supabase %s\n' "$*" >> "$FAKE_LOG"
 case "${1:-}" in
+  --version)
+    printf '2.102.0\n'
+    ;;
   status)
-    [[ "$(cat "$STATE/stack-running")" == "true" ]]
+    [[ "$(cat "$STATE/stack-running")" == "true" ]] || exit 1
+    if [[ "$*" == *"-o json"* ]]; then
+      printf '{"API_URL":"http://127.0.0.1:54321","SERVICE_ROLE_KEY":"test-key"}\n'
+    fi
     ;;
   start)
     printf 'true\n' > "$STATE/stack-running"
@@ -81,6 +116,11 @@ case "${1:-}" in
 esac
 EOF
 
+  cat > "$FAKE_BIN/curl" << 'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+
   cat > "$FAKE_BIN/docker" << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -89,8 +129,12 @@ case "${1:-}" in
   exec)
     if [[ "$*" == *"pg_restore"* ]]; then
       cat >/dev/null
+      touch "$STATE/restore-done"
       printf 'restore ok\n'
       exit 0
+    fi
+    if [[ "${*: -1}" == "SELECT 1;" && -f "$STATE/fail-after-restore" && -f "$STATE/restore-done" ]]; then
+      exit 1
     fi
     case "${*: -1}" in
       "SHOW server_version;") printf '15.8\n' ;;
@@ -101,11 +145,17 @@ case "${1:-}" in
     esac
     ;;
   volume)
-    exit 0
+    case "${2:-}" in
+      inspect) [[ -f "$STATE/volume-exists" ]] ;;
+      rm) rm -f "$STATE/volume-exists" ;;
+      create) touch "$STATE/volume-exists" ;;
+    esac
     ;;
   run)
     if [[ "$*" == *"find /d -type f"* ]]; then
       printf '7\n'
+    elif [[ "$*" == *"tar --xattrs"* ]]; then
+      cat > /dev/null
     fi
     ;;
 esac
@@ -130,7 +180,8 @@ run_restore() {
     PATH="$FAKE_BIN:$PATH" \
     FAKE_LOG="$FAKE_LOG" \
     STATE="$STATE" \
-    "$REPO_ROOT/supabase-restore.sh" "$BACKUP" \
+    SUPABASE_RECOVERY_MODE="${RECOVERY_MODE:-false}" \
+    "$REPO_ROOT/bin/supabase-restore.sh" "$BACKUP" \
     --workdir "$PROJECT" \
     --output "$BATS_TEST_TMPDIR/backups" \
     "$@"
@@ -142,7 +193,7 @@ run_restore() {
   [ "$status" -eq 0 ]
   grep -Fq "supabase status" "$FAKE_LOG"
   grep -Fq "supabase start" "$FAKE_LOG"
-  grep -Fq "pg_restore" "$FAKE_LOG"
+  grep -Fq "pg_restore -U supabase_admin" "$FAKE_LOG"
   [[ "$(cat "$PROJECT/supabase/config.toml")" == 'project_id = "project-restored"' ]]
   [[ "$(cat "$PROJECT/.env")" == "LIVE_SECRET=restored" ]]
   [[ "$(stat -c '%a' "$PROJECT/.env")" == "600" ]]
@@ -153,8 +204,9 @@ run_restore() {
   run_restore --strategy volume --components db --no-backup -y
 
   [ "$status" -eq 0 ]
-  grep -Fq "docker volume rm supabase_db_project" "$FAKE_LOG"
-  grep -Fq "docker volume create supabase_db_project" "$FAKE_LOG"
+  grep -Fq "com.supabase.cli.project=project" "$FAKE_LOG"
+  grep -Fq "docker volume create --label" "$FAKE_LOG"
+  grep -Fq "tar --xattrs --xattrs-include=* --acls --numeric-owner" "$FAKE_LOG"
   grep -Fq "supabase start" "$FAKE_LOG"
   [[ "$output" == *"RESTORE TAMAMLANDI"* ]]
 }
@@ -184,5 +236,17 @@ run_restore() {
   run_restore --strategy sql --components sql --no-backup --allow-project-mismatch -y
 
   [ "$status" -eq 0 ]
+  grep -Fq "pg_restore" "$FAKE_LOG"
+}
+
+@test "scenario: failed post-restore health check returns non-zero" {
+  printf 'true\n' > "$STATE/stack-running"
+  touch "$STATE/fail-after-restore"
+  RECOVERY_MODE=true
+
+  run_restore --strategy sql --components sql --no-backup -y
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"DB swap veya doğrulama başarısız"* ]]
   grep -Fq "pg_restore" "$FAKE_LOG"
 }

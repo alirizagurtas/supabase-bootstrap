@@ -17,11 +17,14 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KEEP=false
 SCENARIO="smoke"
 WORK_ROOT=""
+DRILL_HOME=""
 BACKUP_ROOT=""
+MIRROR_ROOT=""
+MIRROR_KEY_FILE=""
 SCENARIO_PROJECT=""
 declare -a CREATED_ROOTS=()
 declare -a CREATED_PROJECTS=()
@@ -29,7 +32,7 @@ declare -a CREATED_PROJECTS=()
 usage() {
   cat << 'EOF'
 Usage:
-  scripts/integration-scenario.sh [--scenario smoke|sql|volume|all] [--keep]
+scripts/drills/integration-scenario.sh [--scenario smoke|sql|volume|all] [--keep]
 
 Scenarios:
   smoke   start stack, seed data, take backup, verify manifest, restore dry-run
@@ -121,7 +124,7 @@ configure_random_ports() {
       section == "[db]" && $0 == "shadow_port = 54320" { print "shadow_port = " shadow; next }
       section == "[db.pooler]" && $0 == "port = 54329" { print "port = " pooler; next }
       section == "[studio]" && $0 == "port = 54323" { print "port = " studio; next }
-      section == "[inbucket]" && $0 == "port = 54324" { print "port = " inbucket; next }
+      (section == "[inbucket]" || section == "[local_smtp]") && $0 == "port = 54324" { print "port = " inbucket; next }
       section == "[analytics]" && $0 == "port = 54327" { print "port = " analytics; next }
       { print }
     ' "$config" > "$tmp"
@@ -134,9 +137,15 @@ prepare_project() {
   port_base=$((55400 + RANDOM % 800))
 
   WORK_ROOT=$(mktemp -d "/tmp/otonorm-${label}.XXXXXX")
+  DRILL_HOME="$WORK_ROOT/home"
   BACKUP_ROOT="$WORK_ROOT/backups"
+  MIRROR_ROOT="$WORK_ROOT/mirror"
+  MIRROR_KEY_FILE="$WORK_ROOT/mirror.key"
   CREATED_ROOTS+=("$WORK_ROOT")
-  mkdir -p "$BACKUP_ROOT"
+  mkdir -p "$DRILL_HOME" "$BACKUP_ROOT" "$MIRROR_ROOT"
+  export HOME="$DRILL_HOME"
+  openssl rand -hex 32 > "$MIRROR_KEY_FILE"
+  chmod 600 "$MIRROR_KEY_FILE"
 
   local project="$WORK_ROOT/scenario_${label}_project"
   mkdir -p "$project"
@@ -181,6 +190,46 @@ query_scalar() {
   docker exec "$db_container" psql -U postgres -d postgres -At -c "$sql" | xargs
 }
 
+storage_credentials() {
+  local project="$1"
+  local status_json
+
+  status_json=$(cd "$project" && supabase status -o json)
+  STORAGE_API_URL=$(jq -r '.API_URL' <<< "$status_json")
+  STORAGE_SERVICE_KEY=$(jq -r '.SERVICE_ROLE_KEY' <<< "$status_json")
+  [[ "$STORAGE_API_URL" == http* && -n "$STORAGE_SERVICE_KEY" ]]
+}
+
+upload_storage_canary() {
+  local project="$1"
+  local content="$2"
+
+  storage_credentials "$project"
+  curl -fsS \
+    -H "apikey: $STORAGE_SERVICE_KEY" \
+    -H "Authorization: Bearer $STORAGE_SERVICE_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"id":"integration-drill","name":"integration-drill","public":false}' \
+    "${STORAGE_API_URL}/storage/v1/bucket" > /dev/null 2>&1 || true
+  curl -fsS \
+    -H "apikey: $STORAGE_SERVICE_KEY" \
+    -H "Authorization: Bearer $STORAGE_SERVICE_KEY" \
+    -H "Content-Type: text/plain" \
+    -H "x-upsert: true" \
+    --data-binary "$content" \
+    "${STORAGE_API_URL}/storage/v1/object/integration-drill/canary.txt" > /dev/null
+}
+
+download_storage_canary() {
+  local project="$1"
+
+  storage_credentials "$project"
+  curl -fsS \
+    -H "apikey: $STORAGE_SERVICE_KEY" \
+    -H "Authorization: Bearer $STORAGE_SERVICE_KEY" \
+    "${STORAGE_API_URL}/storage/v1/object/authenticated/integration-drill/canary.txt"
+}
+
 seed_data() {
   local project="$1"
 
@@ -205,13 +254,29 @@ take_backup() {
   local project="$1"
 
   log "STEP" "backup"
-  "$ROOT_DIR/supabase-backup.sh" --quiet --workdir "$project" --output "$BACKUP_ROOT" > /dev/null
+  "$ROOT_DIR/bin/supabase-backup.sh" \
+    --quiet \
+    --workdir "$project" \
+    --output "$BACKUP_ROOT" \
+    --mirror "$MIRROR_ROOT" \
+    --mirror-key-file "$MIRROR_KEY_FILE" > /dev/null
 
   local backup_path
   backup_path=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' | sort | tail -1)
   [[ -n "$backup_path" && -f "$backup_path/manifest.json" ]] || fail "Backup manifest not found"
 
   jq -e '.files["database/full-cluster.dump.zst"].sha256 | length > 0' "$backup_path/manifest.json" > /dev/null
+  local mirror_path imported_output imported_path
+  mirror_path="${MIRROR_ROOT}/$(basename "$backup_path").tar.gpg"
+  [[ -s "$mirror_path" ]] || fail "Encrypted mirror backup not found"
+  imported_output=$("$ROOT_DIR/bin/supabase-backup-maintenance.sh" import-mirror \
+    --archive "$mirror_path" \
+    --key-file "$MIRROR_KEY_FILE" \
+    --output "${WORK_ROOT}/mirror-import") ||
+    fail "Encrypted mirror import failed"
+  imported_path=$(sed -n 's/^BACKUP_PATH=//p' <<< "$imported_output")
+  [[ -f "$imported_path/manifest.json" ]] ||
+    fail "Encrypted mirror import manifest not found"
   log "OK" "backup created: $(basename "$backup_path")"
   printf '%s\n' "$backup_path"
 }
@@ -245,7 +310,7 @@ assert_restored_state() {
 }
 
 run_sql_scenario() {
-  local project backup_path
+  local project backup_path restore_log
   prepare_project "sql"
   project="$SCENARIO_PROJECT"
   seed_data "$project"
@@ -254,13 +319,17 @@ run_sql_scenario() {
 
   log "STEP" "restore sql/functions/config while stack is stopped"
   (cd "$project" && supabase stop --no-backup > /dev/null)
-  "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  restore_log="$WORK_ROOT/sql-restore.log"
+  if ! "$ROOT_DIR/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy sql \
     --components sql,functions,config \
     --no-backup \
-    -y > /dev/null
+    -y > "$restore_log" 2>&1; then
+    tail -100 "$restore_log" >&2
+    fail "SQL restore failed; log: $restore_log"
+  fi
 
   assert_restored_state "$project"
 }
@@ -273,7 +342,7 @@ run_smoke_scenario() {
   backup_path=$(take_backup "$project")
 
   log "STEP" "restore dry-run"
-  "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  "$ROOT_DIR/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy sql \
@@ -286,26 +355,36 @@ run_smoke_scenario() {
 }
 
 run_volume_scenario() {
-  local project backup_path count
+  local project backup_path count storage_content restore_log
   prepare_project "volume"
   project="$SCENARIO_PROJECT"
   seed_data "$project"
+  log "STEP" "seed Storage canary"
+  upload_storage_canary "$project" "storage-before-backup"
   backup_path=$(take_backup "$project")
   corrupt_live_state "$project"
+  upload_storage_canary "$project" "storage-after-backup"
 
   log "STEP" "restore db volume"
-  "$ROOT_DIR/supabase-restore.sh" "$backup_path" \
+  restore_log="$WORK_ROOT/volume-restore.log"
+  if ! "$ROOT_DIR/bin/supabase-restore.sh" "$backup_path" \
     --workdir "$project" \
     --output "$BACKUP_ROOT" \
     --strategy volume \
-    --components db \
-    --no-backup \
-    -y > /dev/null
+    --components db,storage \
+    -y > "$restore_log" 2>&1; then
+    tail -100 "$restore_log" >&2
+    fail "Volume restore failed; log: $restore_log"
+  fi
 
   count=$(query_scalar "$project" "SELECT count(*) FROM public.integration_notes WHERE marker = 'baseline';")
   [[ "$count" == "3" ]] || fail "Volume restore did not recover baseline rows"
+  storage_content=$(download_storage_canary "$project")
+  [[ "$storage_content" == "storage-before-backup" ]] ||
+    fail "Volume restore did not recover Storage object bytes"
 
   log "OK" "volume restore recovered DB rows"
+  log "OK" "volume restore recovered Storage object bytes"
 }
 
 main() {
@@ -316,6 +395,8 @@ main() {
   need_cmd jq
   need_cmd supabase
   need_cmd zstd
+  need_cmd gpg
+  need_cmd openssl
 
   case "$SCENARIO" in
     smoke) run_smoke_scenario ;;
@@ -330,4 +411,6 @@ main() {
   log "OK" "integration scenario passed: $SCENARIO"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

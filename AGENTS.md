@@ -1,70 +1,119 @@
 # AGENTS.md
 
-## Shell script quality gate
+## Supabase operasyon skill'i
 
-This repository is Bash-first. After editing any `.sh` file or shell test, run:
+Backup, restore, update, reset, Docker volume, journal, mirror, retention,
+systemd, recovery drill veya Hetzner yaşam döngüsü işi için
+`supabase-operations` skill'i yüklenir ve takip edilir. Güvenlik sözleşmeleri
+zorunludur.
+
+## Kalite kapısı
+
+Bu repository Bash-first çalışır.
 
 ```bash
 ./scripts/check.sh
-```
-
-For legacy cleanup work, run the stricter informational gate:
-
-```bash
 ./scripts/check.sh --strict
 ```
 
-Required local tools:
+- Her shell veya shell-test değişikliğinden sonra normal kapıyı çalıştır.
+- Geniş refactor ve release değişikliklerinde `--strict` çalıştır.
+- Normal kapı `git diff --check` ve hafif `gitleaks` worktree secret scan de
+  çalıştırır.
+- İterasyon sırasında RTK ile sarılmış kapıları kullan; ham komutları final
+  release kanıtına sakla.
+- Release kanıtı ayrıca şunları gerektirir:
 
-```txt
-shellcheck
-shfmt
-bats
-shellspec
-checkbashisms
+```bash
+./scripts/drills/integration-scenario.sh --scenario all
+./scripts/drills/cli-update-drill.sh --scenario all
 ```
 
-`checkbashisms` is only for POSIX `/bin/sh` scripts. The Supabase scripts are Bash scripts, so Bash syntax is expected.
+- Gerçek stack drill'lerini günlük kapıya koyma; manuel veya scheduled tut.
+- Uzun test ve drill komutlarını tek-shot çalıştır. En fazla 30 saniyede bir
+  poll et.
+- `./scripts/check.sh` ve `./scripts/check.sh --strict` aynı anda paralel
+  çalıştırılmaz; ikisi de aynı stateful Bats suite'ini kullanır.
+- Bats paralelliği varsayılan değildir; mevcut suite stateful testler nedeniyle
+  paralel çalışmada flaky davranış üretmiştir.
 
-## Test policy
+## Repository yapısı
 
-- `bash -n` must pass for all shell scripts.
-- `shellcheck -x -S error` must pass for all shell scripts.
-- `shfmt -d -i 2 -ci -sr` must pass for actively refactored scripts.
-- `bats tests` must pass for behavior tests.
-- `shellspec` runs when a `spec/` directory exists.
+- Kullanıcı komutları: `bin/`
+- Ortak sourced Bash kodu: `lib/`
+- Geliştirme otomasyonu: `scripts/`
+- Gerçek stack drill'leri: `scripts/drills/`
+- Testler: `tests/` ve `spec/`
+- Kararlar ve runbook'lar: `docs/`
+- Yapısal değişikliklerde `docs/repository-map.md` güncel tutulur.
+- Dokümantasyon hizası için `docs/documentation-model.md` takip edilir.
+- Yeni araç veya paket önkoşulunda `docs/dependencies.md` ve gerekirse
+  `scripts/doctor.sh` aynı değişiklik içinde güncellenir.
 
-`--strict` must pass before broad refactors or release-style changes.
+## RTK ve context
 
-For normal agent work, `./scripts/check.sh` is the command that must run after changes.
+- Shell işi öncesinde `RTK.md` oku; token disiplini için kısa repository
+  giriş noktasıdır.
+- `docs/agent-tool-routing.md` takip edilir; routing şu komutla doğrulanır:
+  `./scripts/check-agent-routing.sh`.
+- RTK kapsamı ve alt komut davranışı `./scripts/check-rtk-command-matrix.sh`
+  ile doğrulanır; bu test geçmeden RTK kullanım kuralı değiştirilmiş sayılmaz.
+- Serena MCP varsayılan olarak kapalıdır; yalnız açık kullanıcı isteğiyle
+  etkinleştirilir. Aksi halde sözdizimsel yapı için `ast-grep`, tam metin için
+  `rg`, yaklaşık 10 satırdan uzun desteklenen çıktı için açık RTK kullanılır.
+- Kısa çıktı, exact bütünlük kanıtı veya eksik filtre durumunda ham komut
+  kullanılır. Token tasarrufu için asla `rtk run` veya `rtk proxy` kullanılmaz.
+- Uzun komutlar en fazla 30 saniyede bir poll edilir.
+- Araştırma, implementasyon veya doğrulama fazı bitince alakasız yeni fazdan
+  önce `/compact` önerilir.
+- "status", "son durum" veya yalnız özet isteyen sorularda önce mevcut kanıt
+  incelenir; kanıt eksik/eski değilse veya kullanıcı açıkça istemediyse strict
+  gate ya da drill tekrar çalıştırılmaz.
+- Token hassas işlerde kullanıcı hızı kotaya tercih ettiğini açıkça söylemedikçe
+  Fast mode kapalı tutulur. Trivial işte low, varsayılan olarak medium, yalnız
+  karmaşık recovery/security/ambiguous production kararlarında high reasoning
+  kullanılır.
+- Token disiplini değişikliklerinden sonra `./scripts/agent-token-report.sh`,
+  tekrar edilebilir yerel eşik gerektiğinde
+  `./scripts/agent-token-report.sh --check` çalıştırılır.
 
-## Agent-readable shell comments
+## GitHub ve kayıt dili
 
-Use comments to document intent and contracts, not obvious syntax. Critical shell functions should have a compact `Contract:` block when they cross a boundary, mutate state, call external systems, or can destroy data.
+- Yeni commit mesajları, PR başlıkları, PR gövdeleri ve GitHub'a yazılan
+  özetler varsayılan olarak Türkçe olmalıdır.
+- Komut adları, path'ler, paket adları, branch adları, hata metinleri ve API
+  terimleri aynen korunur.
+- Pushlanan her kapsam değişikliği, sohbet geçmişine ihtiyaç kalmadan GitHub
+  history üzerinden anlaşılmalıdır.
+- Pushlanan değişiklik kapsamı genişletirse aynı fazda PR gövdesi Türkçe
+  `Ne değişti`, `Neden`, `Doğrulama` ve `Kalan işler` bölümleriyle güncellenir.
 
-Required fields for destructive or high-risk functions:
+## Hata öğrenme döngüsü
 
-```txt
-Purpose
-Inputs
-Effects
-Safety
-Failure
-```
+- Tekrarlanabilir komut hataları aynı fazda sınıflandırılır ve çalışan fallback
+  bulunduysa `docs/failures/known-failures.md` içine kısa kayıt eklenir.
+- Failure log lazy-load edilir: tüm dosya varsayılan olarak okunmaz; yalnız hata
+  olduğunda veya bilinen riskli komut öncesinde hedefli `rg` ile aranır.
 
-Avoid line-by-line narration such as "increment counter" or "assign variable"; prefer documenting why the step exists, what state it reads/writes, and what guarantee callers can rely on.
+## Kritik sınırlar
 
-## RTK usage
+- `-y`, bütünlük veya uyumluluk hatalarını asla bypass etmez.
+- Yıkıcı kapsam basename'den değil, kanonik `supabase/config.toml` ve
+  `project_id` değerinden çözülür.
+- Global Docker prune kapalı tutulur.
+- Fiziksel volume snapshot için stack durdurulmuş olmalı ve yeniden başlatma
+  garanti edilmelidir.
+- CLI update; doğrulanmış backup, stop/start, health doğrulaması ve recovery
+  gerektirir.
+- `supabase/`, `.supabase-ops/`, key dosyaları, loglar, backup'lar ve geçici
+  drill state Git dışında tutulur.
 
-- Use explicit `rtk` for supported commands that read large files or produce meaningful diff/output.
-- If an `rtk` command produces empty, misleading, or failed output, fall back to a targeted shell command and keep the scope small.
-- Do not use `rtk diff fileA fileB` to inspect repo changes; it compares files. Use `git diff -- file` or a supported RTK repo diff command.
+## Supabase MCP
 
-## Bash refactor guardrails
-
-- In `set -e` scripts, helper functions must end with an explicit successful command such as `return 0` when their final operation may be a false `[[ ... ]]`, `grep`, or conditional probe.
-- When passing associative arrays through `declare -n`, pass the original variable name string to nested helpers, not the local nameref variable name. Passing the nameref itself can create circular nameref failures.
-- Add focused behavior tests for every extracted helper that mutates files, calls external commands, or controls destructive restore/update flow.
-- For restore/update scripts, test stopped-stack and running-stack paths separately; stack state changes are common sources of hidden logic bugs.
-- Keep heavy real Supabase stack drills separate from the normal quality gate. Prefer fast Bats scenario fixtures for daily regression coverage; run `scripts/integration-scenario.sh` only as a manual/scheduled release drill.
-- `-y` must never bypass integrity failures. Broken manifests or failed hash checks must stop non-interactive restore before destructive commands.
+- `supabase-local`: `http://127.0.0.1:54321/mcp`.
+- MCP varsayılan olarak read-only kullanılır; mutasyon için açık kullanıcı
+  onayı gerekir.
+- MCP, schema/query/debug işlerini tamamlar; lifecycle scriptlerinin yerini
+  almaz.
+- Hetzner MCP erişimi VPN veya SSH tunnel gerektirir; endpoint public internete
+  açılmaz.

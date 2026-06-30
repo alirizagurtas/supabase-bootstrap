@@ -1,5 +1,5 @@
 Describe 'supabase-update.sh'
-  Include ./supabase-update.sh
+  Include ./bin/supabase-update.sh
 
   It 'can be sourced without running main'
     When call type main

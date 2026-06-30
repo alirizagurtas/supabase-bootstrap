@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_PROJECT_DIR="$HOME/supabase"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+step() {
+  echo -e "\n${BLUE}==>${NC} ${CYAN}$1${NC}"
+}
+
+ok() {
+  echo -e "${GREEN}TAMAM:${NC} $1"
+}
+
+warn() {
+  echo -e "${YELLOW}UYARI:${NC} $1"
+}
+
+fail() {
+  echo -e "${RED}HATA:${NC} $1"
+  exit 1
+}
+
+resolve_project_id() {
+  local workdir="$1"
+  local project_id
+
+  project_id=$(sed -nE 's/^[[:space:]]*project_id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+    "${workdir}/supabase/config.toml" | head -1)
+  [[ -n "$project_id" ]] || return 1
+  printf '%s\n' "$project_id"
+}
+
+load_operation_state() {
+  local script_dir ops_lib
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ops_lib="${script_dir}/../lib/operation-state.sh"
+  [[ -r "$ops_lib" ]] || fail "Operation state library bulunamadı: $ops_lib"
+  # shellcheck source=lib/operation-state.sh
+  source "$ops_lib"
+}
+
+reset_exit() {
+  local status=$?
+  if declare -F ops_mark_exit > /dev/null 2>&1; then
+    ops_mark_exit "$status" || true
+  fi
+  return "$status"
+}
+
+ask_yes_no() {
+  local prompt="$1"
+  local default="${2:-N}"
+  local answer=""
+
+  if [ "$default" = "Y" ]; then
+    read -r -p "$(echo -e "${YELLOW}?${NC} $prompt [Y/n]: ")" answer
+    answer="${answer:-Y}"
+  else
+    read -r -p "$(echo -e "${YELLOW}?${NC} $prompt [y/N]: ")" answer
+    answer="${answer:-N}"
+  fi
+
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+ask_project_dir() {
+  local input=""
+
+  read -r -p "$(echo -e "${YELLOW}?${NC} Proje klasörü [$DEFAULT_PROJECT_DIR]: ")" input
+
+  if [ -z "$input" ]; then
+    PROJECT_DIR="$DEFAULT_PROJECT_DIR"
+  else
+    PROJECT_DIR="$input"
+  fi
+}
+
+canonical_dir() {
+  local path="$1"
+  (cd -- "$path" 2> /dev/null && pwd -P)
+}
+
+validate_removal_target() {
+  local target="$1"
+  local home
+  home=$(canonical_dir "$HOME") || fail "HOME çözümlenemedi: $HOME"
+
+  if [ "$target" = "/" ] || [ "$target" = "$home" ]; then
+    fail "Güvenli olmayan klasör silinemez: $target"
+  fi
+
+  if [ ! -f "$target/supabase/config.toml" ]; then
+    fail "Hedef Supabase proje kökü değil: $target"
+  fi
+}
+
+confirm_project_removal() {
+  local target
+  target=$(canonical_dir "$PROJECT_DIR") || fail "Proje klasörü bulunamadı: $PROJECT_DIR"
+  validate_removal_target "$target"
+  PROJECT_DIR="$target"
+
+  warn "Bu işlem proje klasörünü ve local DB volume'unu silecek:"
+  echo "  $PROJECT_DIR"
+  ask_yes_no "Bu proje silinsin mi?" "N"
+}
+
+require_command() {
+  command -v "$1" > /dev/null 2>&1 || fail "$1 komutu bulunamadı"
+}
+
+print_header() {
+  echo -e "${CYAN}"
+  echo "=================================================="
+  echo " Supabase Sıfırlama Yardımcısı"
+  echo " Local proje ve Docker temizlik aracı"
+  echo "=================================================="
+  echo -e "${NC}"
+}
+
+show_menu() {
+  echo ""
+  echo "Ne yapmak istiyorsun?"
+  echo ""
+  echo "  1) Supabase veritabanını backup alarak sıfırla"
+  echo "     - Proje klasörü kalır"
+  echo "     - supabase db reset çalışır"
+  echo "     - Veritabanı verileri silinir"
+  echo "     - Migration ve seed dosyaları tekrar çalışır"
+  echo ""
+  echo "  2) Supabase projesini durdur ve proje klasörünü sil"
+  echo "     - supabase stop --no-backup çalışır"
+  echo "     - Hedef proje klasörü silinir"
+  echo "     - Docker genel temizliği yapılmaz"
+  echo ""
+  echo "  3) Supabase proje ve kullanıcı verilerini temizle"
+  echo "     - supabase stop --no-backup çalışır"
+  echo "     - Hedef proje klasörü silinir"
+  echo "     - İstenirse ~/.supabase klasörü silinir"
+  echo "     - Global Docker prune güvenlik nedeniyle çalıştırılmaz"
+  echo ""
+  echo "  4) Çıkış"
+  echo ""
+}
+
+stop_supabase_if_possible() {
+  local target
+  target=$(canonical_dir "$PROJECT_DIR") || fail "Proje klasörü bulunamadı: $PROJECT_DIR"
+  validate_removal_target "$target"
+  PROJECT_DIR="$target"
+
+  step "Supabase durduruluyor"
+  (cd "$PROJECT_DIR" && supabase stop --no-backup) ||
+    fail "Supabase durdurulamadı; proje klasörü silinmeyecek"
+}
+
+reset_local_db() {
+  require_command supabase
+
+  if [ ! -d "$PROJECT_DIR" ]; then
+    fail "Proje klasörü bulunamadı: $PROJECT_DIR"
+  fi
+
+  cd "$PROJECT_DIR"
+
+  if [ ! -d "supabase" ]; then
+    fail "Bu klasörde supabase/ klasörü bulunamadı: $PROJECT_DIR"
+  fi
+
+  warn "Bu işlem local Supabase veritabanını sıfırlar."
+  warn "Local veritabanı verileri silinir."
+  warn "Migration dosyaları baştan çalışır ve config.toml içindeki seed dosyaları tekrar yüklenir."
+
+  if ! ask_yes_no "Local veritabanını sıfırlamaya devam edilsin mi?" "N"; then
+    warn "İşlem iptal edildi."
+    exit 0
+  fi
+
+  step "supabase db reset çalıştırılıyor"
+  supabase db reset
+  ok "Local Supabase veritabanı sıfırlandı"
+}
+
+remove_project_dir() {
+  if [ ! -d "$PROJECT_DIR" ]; then
+    warn "Proje klasörü zaten yok: $PROJECT_DIR"
+    return
+  fi
+
+  local target
+  target=$(canonical_dir "$PROJECT_DIR") || fail "Proje klasörü çözümlenemedi: $PROJECT_DIR"
+  validate_removal_target "$target"
+  PROJECT_DIR="$target"
+
+  step "Proje klasörü siliniyor"
+  cd /tmp
+
+  if rm -rf "$PROJECT_DIR" 2> /dev/null; then
+    ok "Proje klasörü silindi: $PROJECT_DIR"
+  else
+    warn "Normal silme başarısız oldu. sudo ile tekrar deneniyor."
+    sudo rm -rf "$PROJECT_DIR"
+    ok "Proje klasörü sudo ile silindi: $PROJECT_DIR"
+  fi
+  return 0
+}
+
+remove_supabase_home() {
+  local supabase_home="$HOME/.supabase"
+
+  if [ ! -d "$supabase_home" ]; then
+    warn "Supabase CLI klasörü zaten yok: $supabase_home"
+    return
+  fi
+
+  warn "Bu işlem Supabase CLI kullanıcı klasörünü silecek:"
+  echo "  $supabase_home"
+
+  if ! ask_yes_no "Supabase CLI klasörü silinsin mi?" "N"; then
+    warn "Supabase CLI klasörü silme işlemi iptal edildi."
+    return
+  fi
+
+  step "Supabase CLI klasörü siliniyor"
+
+  if rm -rf "$supabase_home" 2> /dev/null; then
+    ok "Supabase CLI klasörü silindi: $supabase_home"
+  else
+    warn "Normal silme başarısız oldu. sudo ile tekrar deneniyor."
+    sudo rm -rf "$supabase_home"
+    ok "Supabase CLI klasörü sudo ile silindi: $supabase_home"
+  fi
+}
+
+docker_full_cleanup() {
+  warn "Global 'docker system prune -a --volumes' güvenlik nedeniyle çalıştırılmayacak."
+  warn "Supabase dışındaki Docker kaynakları bu scriptin kapsamı dışındadır."
+}
+
+create_required_backup() {
+  local script_dir backup_script backup_out backup_path
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  backup_script="${script_dir}/supabase-backup.sh"
+  [[ -x "$backup_script" ]] || fail "Zorunlu backup helper bulunamadı: $backup_script"
+
+  step "Zorunlu reset backup'ı"
+  backup_out="$("$backup_script" --quiet --workdir "$PROJECT_DIR" 2>&1)" || {
+    printf '%s\n' "$backup_out" >&2
+    fail "Reset öncesi backup başarısız"
+  }
+  backup_path=$(sed -n 's/^BACKUP_PATH=//p' <<< "$backup_out" | tail -1)
+  [[ -n "$backup_path" && -d "$backup_path" ]] ||
+    fail "Reset backup dizini doğrulanamadı"
+  "$backup_script" --verify "$backup_path" > /dev/null ||
+    fail "Reset backup bütünlük kontrolü başarısız"
+  ops_data backup_path "$backup_path"
+  ops_phase backup_verified
+  ok "Reset backup'ı doğrulandı: $backup_path"
+}
+
+main() {
+  local choice
+  local project_id
+
+  trap reset_exit EXIT
+  print_header
+  ask_project_dir
+
+  step "Hedef"
+  echo "Proje klasörü: $PROJECT_DIR"
+
+  show_menu
+  read -r -p "$(echo -e "${YELLOW}?${NC} Seçenek seç [1-4]: ")" choice
+
+  if [[ "$choice" == "4" ]]; then
+    warn "İşlem iptal edildi."
+    exit 0
+  fi
+  [[ "$choice" =~ ^[1-3]$ ]] || fail "Geçersiz seçenek: $choice"
+
+  PROJECT_DIR=$(canonical_dir "$PROJECT_DIR") ||
+    fail "Proje klasörü bulunamadı: $PROJECT_DIR"
+  validate_removal_target "$PROJECT_DIR"
+  project_id=$(resolve_project_id "$PROJECT_DIR") ||
+    fail "supabase/config.toml içinde project_id bulunamadı"
+
+  require_command jq
+  require_command flock
+  load_operation_state
+  export SUPABASE_OP_STATE_DIR="${HOME}/.local/state/supabase-ops/${project_id//[^a-zA-Z0-9_.-]/_}"
+  ops_begin "$PROJECT_DIR" "$project_id" reset ||
+    fail "Reset işlem kilidi veya state kaydı oluşturulamadı"
+  create_required_backup
+  ops_phase mutating
+
+  case "$choice" in
+    1)
+      reset_local_db
+      ;;
+    2)
+      require_command supabase
+      if ! confirm_project_removal; then
+        warn "Klasör silme işlemi iptal edildi."
+        exit 0
+      fi
+      stop_supabase_if_possible
+      remove_project_dir
+      ;;
+    3)
+      require_command supabase
+      require_command docker
+      if ! confirm_project_removal; then
+        warn "Klasör silme işlemi iptal edildi."
+        exit 0
+      fi
+      stop_supabase_if_possible
+      remove_project_dir
+      remove_supabase_home
+      docker_full_cleanup
+      ;;
+  esac
+
+  ops_finish committed
+  step "Tamamlandı"
+  ok "Sıfırlama yardımcısı tamamlandı"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

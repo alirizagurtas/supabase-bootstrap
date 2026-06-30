@@ -29,18 +29,27 @@ require_cmd() {
   command -v "$1" > /dev/null 2>&1 || fail "Missing command: $1"
 }
 
-collect_files() {
-  find "$ROOT_DIR" -maxdepth 2 -type f "$@" | sort
-}
-
 collect_shell_scripts() {
   find "$ROOT_DIR" \
-    -maxdepth 2 \
     -type f \
     -name '*.sh' \
+    ! -path "$ROOT_DIR/.git/*" \
+    ! -path "$ROOT_DIR/supabase/*" \
     ! -path "$ROOT_DIR/tests/*" \
     ! -path "$ROOT_DIR/spec/*" |
     sort
+}
+
+run_git_diff_check() {
+  log "STEP" "git diff --check"
+  git -C "$ROOT_DIR" diff --check
+  log "OK" "git diff --check"
+}
+
+run_security_check() {
+  log "STEP" "security check"
+  "$ROOT_DIR/scripts/security-check.sh"
+  log "OK" "security check"
 }
 
 run_syntax_check() {
@@ -71,7 +80,7 @@ run_shfmt() {
     # shellcheck disable=SC2046
     shfmt -d -i 2 -ci -sr $(collect_shell_scripts)
   else
-    shfmt -d -i 2 -ci -sr "$ROOT_DIR/supabase-update.sh" "$ROOT_DIR/scripts/check.sh"
+    shfmt -d -i 2 -ci -sr "$ROOT_DIR/bin/supabase-update.sh" "$ROOT_DIR/scripts/check.sh"
   fi
 
   log "OK" "shfmt"
@@ -95,6 +104,25 @@ run_checkbashisms() {
   log "STEP" "checkbashisms"
   checkbashisms "${posix_scripts[@]}"
   log "OK" "checkbashisms"
+}
+
+run_systemd_verify() {
+  local units=(
+    "$ROOT_DIR/deploy/systemd/supabase-backup@.service"
+    "$ROOT_DIR/deploy/systemd/supabase-backup@.timer"
+  )
+  local output
+
+  [[ -f "${units[0]}" && -f "${units[1]}" ]] || {
+    log "SKIP" "systemd-analyze: no unit templates"
+    return 0
+  }
+  log "STEP" "systemd unit verify"
+  if ! output=$(systemd-analyze verify "${units[@]}" 2>&1); then
+    printf '%s\n' "$output" >&2
+    fail "systemd unit verification failed"
+  fi
+  log "OK" "systemd unit verify"
 }
 
 run_bats() {
@@ -134,16 +162,21 @@ main() {
   (($# == 0)) || fail "Unknown argument: $1"
 
   require_cmd bash
+  require_cmd git
   require_cmd shellcheck
   require_cmd shfmt
   require_cmd bats
   require_cmd checkbashisms
   require_cmd shellspec
+  require_cmd systemd-analyze
 
+  run_git_diff_check
+  run_security_check
   run_syntax_check
   run_shellcheck
   run_shfmt
   run_checkbashisms
+  run_systemd_verify
   run_bats
   run_shellspec
 
