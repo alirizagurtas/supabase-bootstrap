@@ -95,3 +95,17 @@ rg -n 'Final release kanıtı' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing raw final evidence rule"
 ok "long test/drill discipline documented"
+
+rg -n 'GitHub ve kayıt dili' \
+  "$ROOT_DIR/AGENTS.md" > /dev/null ||
+  fail "AGENTS.md missing GitHub language rule"
+rg -n 'Yeni commit mesajları, PR başlıkları, PR gövdeleri' \
+  "$ROOT_DIR/AGENTS.md" > /dev/null ||
+  fail "AGENTS.md missing Turkish GitHub record scope"
+rg -n 'GitHub kayıt disiplini' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing GitHub history discipline"
+rg -n 'Ne değişti.*Neden.*Doğrulama.*Kalan işler' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing Turkish PR body sections"
+ok "Turkish GitHub history discipline documented"

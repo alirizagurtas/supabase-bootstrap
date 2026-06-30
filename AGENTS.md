@@ -52,6 +52,17 @@ This repository is Bash-first.
 - Poll long commands no more often than every 30 seconds.
 - After a completed research, implementation, or validation phase, recommend `/compact` before an unrelated phase.
 
+## GitHub ve kayıt dili
+
+- Yeni commit mesajları, PR başlıkları, PR gövdeleri ve GitHub'a yazılan
+  özetler varsayılan olarak Türkçe olmalıdır.
+- Komut adları, path'ler, paket adları, branch adları, hata metinleri ve API
+  terimleri aynen korunur.
+- Pushlanan her kapsam değişikliği, sohbet geçmişine ihtiyaç kalmadan GitHub
+  history üzerinden anlaşılmalıdır.
+- Pushlanan değişiklik kapsamı genişletirse aynı fazda PR gövdesi Türkçe
+  `Ne değişti`, `Neden`, `Doğrulama` ve `Kalan işler` bölümleriyle güncellenir.
+
 ## Critical boundaries
 
 - `-y` never bypasses integrity or compatibility failures.

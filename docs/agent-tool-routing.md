@@ -76,6 +76,25 @@ arayla poll edilir; başarılı uzun çıktı context'e basılmaz, özetlenir. H
 incelemesinde `rtk err`, test iterasyonunda `rtk test` kullanılır. Exact release
 kanıtı, hash, manifest veya tam çıktı gerekiyorsa ham komuta dönülür.
 
+## GitHub kayıt disiplini
+
+GitHub üzerindeki kayıtlar kullanıcı tarafından sohbet geçmişi olmadan
+okunabilmelidir. Bu yüzden yeni commit mesajları, PR başlıkları, PR gövdeleri ve
+GitHub'a yazılan özetler Türkçe yazılır. Teknik isimler çevrilmez: komutlar,
+path'ler, branch adları, paket isimleri, hata metinleri ve API terimleri olduğu
+gibi korunur.
+
+| Durum | Kural |
+| --- | --- |
+| Küçük fix | Türkçe, niyet odaklı commit mesajı yeterlidir. |
+| Yeni davranış veya test kuralı | Commit mesajı Türkçe olur; açık PR varsa gövde aynı fazda güncellenir. |
+| Production veya safety değişikliği | PR gövdesinde `Ne değişti`, `Neden`, `Doğrulama`, `Kalan işler` bölümleri güncellenir. |
+| GitHub/PR/CI işi | Official GitHub skill okunur; gerekirse `gh` yalnız yerel checkout veya Actions boşlukları için kullanılır. |
+
+Eski commit geçmişi rebase edilerek yeniden yazılmaz. Yeni kayıtlar Türkçe
+tutulur; açık PR'ın başlığı ve gövdesi güncel kapsamı Türkçe anlatacak şekilde
+yenilenir.
+
 ## Doğrulama kanıtı
 
 2026-06-28 tarihinde aynı repository üzerinde:
