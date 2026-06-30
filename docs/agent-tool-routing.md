@@ -76,6 +76,40 @@ arayla poll edilir; başarılı uzun çıktı context'e basılmaz, özetlenir. H
 incelemesinde `rtk err`, test iterasyonunda `rtk test` kullanılır. Exact release
 kanıtı, hash, manifest veya tam çıktı gerekiyorsa ham komuta dönülür.
 
+## Token/kota disiplini
+
+RTK yalnız shell/tool çıktısını küçültür. Model reasoning, konuşma geçmişi,
+AGENTS/skill metadata, web araştırması ve manuel `/compact` etkisini ölçmez.
+Bu yüzden token kontrolü iki katmanlıdır:
+
+| Katman | Araç | Kural |
+| --- | --- | --- |
+| Tool çıktısı | `rtk ...` | Desteklenen uzun çıktıda varsayılan. |
+| Thread context'i | `/compact` | Araştırma, implementasyon, validation veya PR fazı bittikten sonra öner. |
+| Reasoning | model ayarı | Trivial işte low, normalde medium, yalnız recovery/security/ambiguous production için high. |
+| Hız/kredi | `/fast status`, `/fast off` | Kota hassas işlerde Fast mode kapalı varsayılır. |
+| Ölçüm | `./scripts/agent-token-report.sh` | Faz sonunda düşük-token RTK etki raporu üretir. |
+| Eşik kapısı | `./scripts/agent-token-report.sh --check` | RTK tasarrufu ve fallback sayısı eşiklerini doğrular. |
+
+`status`, `son durum`, `değerlendir` veya summary-only sorularında önce mevcut
+kanıtlar okunur: git durumu, validation raporu, son commit/PR durumu ve önceki
+test çıktısı. Strict gate veya ağır drill tekrar çalıştırılmaz; yalnız kanıt
+eksik, stale veya kullanıcı açıkça tekrar doğrulama istiyorsa çalıştırılır.
+
+Subagent ana thread kirliliğini azaltabilir, ancak her subagent kendi model ve
+tool işini yaptığı için toplam token tüketimini artırabilir. Bu repository'de
+subagent yalnız kullanıcı açıkça isterse kullanılır.
+
+Token etkisi ölçüm komutu:
+
+```bash
+./scripts/agent-token-report.sh
+./scripts/agent-token-report.sh --check
+```
+
+Bu rapor RTK'nin etkisini ölçer; `/compact` sonrası model quota etkisi için
+Codex `/status` çıktısı ayrıca yorumlanır.
+
 ## GitHub kayıt disiplini
 
 GitHub üzerindeki kayıtlar kullanıcı tarafından sohbet geçmişi olmadan
@@ -125,6 +159,8 @@ rg -n "projectCards|gh pr edit|GraphQL" docs/failures/known-failures.md
 | --- | ---: | ---: | ---: |
 | `./scripts/check.sh --strict` | yaklaşık 1140 token | yaklaşık 42 token | `%96,3` azalma |
 | 555 satırlık `supabase` araması | yaklaşık 12709 token | yaklaşık 4728 token | `%62,8` azalma |
+| 2026-06-30 proje RTK toplamı | 152046 token input | 106381 token output | `46363 token / %30,5` azalma |
+| 2026-06-30 günlük RTK ölçümü | 37337 token input | 21264 token output | `16073 token / %43,0` azalma |
 
 Serena etkinleştirildiği testte `resolve_helpers` fonksiyonunu ve `main` içindeki
 çağrısını doğru buldu.

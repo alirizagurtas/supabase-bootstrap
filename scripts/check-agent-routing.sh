@@ -99,6 +99,24 @@ rg -n 'Poll long commands no more often than every 30 seconds' \
 rg -n 'rtk test \./scripts/check\.sh --strict' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing strict RTK gate"
+rg -n '\./scripts/agent-token-report\.sh --check' \
+  "$ROOT_DIR/AGENTS.md" "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "token report threshold gate missing"
+rg -n 'status.*son durum' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "status question trigger rule missing"
+rg -n 'Strict gate veya ağır drill tekrar çalıştırılmaz' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "status question no-rerun rule missing"
+rg -n 'Fast mode kapalı varsayılır' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "Fast mode quota rule missing"
+rg -n 'Subagent ana thread kirliliğini azaltabilir' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "subagent context rule missing"
+rg -n 'toplam token tüketimini artırabilir' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "subagent token tradeoff rule missing"
 rg -n 'rtk err \./scripts/drills/integration-scenario\.sh --scenario all' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing RTK integration drill"
@@ -132,6 +150,9 @@ rg -n 'Failure log lazy-load edilir' \
 rg -n 'projectCards|gh pr edit|gh api repos/OWNER/REPO/pulls/NUM' \
   "$ROOT_DIR/docs/failures/known-failures.md" > /dev/null ||
   fail "GitHub PR edit fallback not documented"
+rg -n '@RTK\.md|kök `RTK\.md` yok' \
+  "$ROOT_DIR/docs/failures/known-failures.md" > /dev/null ||
+  fail "missing RTK.md learning record not documented"
 rg -n 'Hata öğrenme ve fallback disiplini' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing failure fallback matrix"

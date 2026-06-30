@@ -81,3 +81,29 @@ rtk test ./scripts/check-agent-routing.sh
 
 `rg` repository doğrulama aracıdır; Codex'in bundled path'ine güvenilmez. Yeni
 makine bootstrap'inde `ripgrep` sistem paketi olarak kurulu olmalıdır.
+
+## AGENTS `@RTK.md` referansı ama kök `RTK.md` yok
+
+### Belirti
+
+Yeni session veya ajan başlangıç kontrolünde repo kuralları `@RTK.md` referansı
+verir; ancak repository kökünde dosya yoksa ajan önce hatalı bir okuma yapar
+ve RTK kararları için farklı dokümana dönmek zorunda kalır.
+
+### Sınıflandırma
+
+Ajan talimat/dokümantasyon tutarsızlığı. Production davranışını doğrudan
+bozmaz; fakat token disiplini için başlangıçta gereksiz hata ve kararsızlık
+yaratır.
+
+### Fallback / çözüm
+
+Kök dizine kısa `RTK.md` ekle ve detaylı matrisi
+`docs/agent-tool-routing.md` içinde tut. `AGENTS.md` yalnız kısa entrypoint'i
+işaret etsin.
+
+### Kural
+
+AGENTS içinde referans verilen repo-local talimat dosyaları version-controlled
+olarak bulunmalıdır. Yapı değişirse `docs/repository-map.md` aynı değişiklikte
+güncellenir.

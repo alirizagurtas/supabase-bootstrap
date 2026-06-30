@@ -42,6 +42,8 @@ This repository is Bash-first.
 
 ## RTK and context
 
+- Read `RTK.md` before shell work; it is the short repo entrypoint for token
+  discipline.
 - Follow `docs/agent-tool-routing.md`; validate routing with
   `./scripts/check-agent-routing.sh`.
 - Serena MCP is disabled by default; enable it only on explicit user request.
@@ -51,6 +53,16 @@ This repository is Bash-first.
   filters. Never use `rtk run` or `rtk proxy` for token savings.
 - Poll long commands no more often than every 30 seconds.
 - After a completed research, implementation, or validation phase, recommend `/compact` before an unrelated phase.
+- For "status", "son durum", or summary-only questions, inspect existing
+  evidence first; do not rerun strict gates or drills unless the evidence is
+  missing, stale, or the user explicitly asks.
+- For token-sensitive work, keep Fast mode off unless the user explicitly
+  chooses speed over quota. Use low reasoning for trivial work, medium by
+  default, and high only for complex recovery, security, or ambiguous
+  production decisions.
+- Use `./scripts/agent-token-report.sh` after token-discipline changes and
+  `./scripts/agent-token-report.sh --check` when a repeatable local threshold
+  gate is needed.
 
 ## GitHub ve kayıt dili
 

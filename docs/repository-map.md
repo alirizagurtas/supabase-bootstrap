@@ -26,6 +26,7 @@ güncellenir.
 | --- | --- |
 | `README.md` | Kurulum, kullanım ve ana güvenlik sözleşmelerini açıklar. |
 | `AGENTS.md` | Bu repository üzerinde çalışan ajanların kalite ve güvenlik kurallarını tanımlar. |
+| `RTK.md` | Repository için kısa RTK/token disiplini entrypoint'idir; detayları `docs/agent-tool-routing.md` içine yönlendirir. |
 | `.gitignore` | Editör swap dosyaları, operation journal ve yerel Supabase proje verisini Git dışında tutar. |
 | `.serena/project.yml` | Serena için Bash dilini, ignore kapsamını ve proje güvenlik başlangıç talimatını tanımlar. |
 | `.serena/.gitignore` | Serena indeks cache'i ile makineye özel ayarları Git dışında tutar. |
@@ -54,6 +55,7 @@ güncellenir.
 | --- | --- |
 | `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
 | `scripts/check-agent-routing.sh` | RTK, Serena, ast-grep, rg ve uzun test/drill disiplini kurallarını kontrollü fixture ile doğrular. |
+| `scripts/agent-token-report.sh` | RTK token tasarrufunu ve fallback sayısını düşük-token raporlar; `--check` ile eşik kapısı sağlar. |
 | `scripts/backup-codex-runtime.sh` | Global Codex runtime için memory, session, skill ve secretsız config backup artifact'i üretir. |
 | `scripts/restore-codex-runtime.sh` | Codex runtime backup artifact'ini safety copy alarak restore eder ve araç durumunu raporlar. |
 | `scripts/notify-on-failure.sh` | Sardığı komutun hatasını loglar ve yapılandırılmış executable hook'a bildirir. |
