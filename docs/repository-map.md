@@ -15,6 +15,7 @@ güncellenir.
 | `tests/` | Hızlı Bats davranış ve sözleşme testleri |
 | `spec/` | ShellSpec testleri |
 | `docs/` | Karar, işletim ve doğrulama dokümantasyonu |
+| `docs/failures/` | Tekrarlanabilir komut hataları ve düşük-token fallback kayıtları |
 
 ## Dosya envanteri
 
@@ -86,6 +87,7 @@ güncellenir.
 | `docs/integration-scenarios.md` | Hızlı testler ile gerçek stack drill'lerinin kapsamını ve komutlarını açıklar. |
 | `docs/operations-runbook.md` | Backup, retention, update, recovery, restore ve systemd işletim adımlarını tanımlar. |
 | `docs/validation-report.md` | Gerçekleştirilen doğrulamalar ile Hetzner'a bırakılan host kontrollerini kaydeder. |
+| `docs/failures/known-failures.md` | Tekrarlanabilir komut hatalarını, sınıflandırmasını ve hedefli fallback çözümünü tutar. |
 
 ### Deployment şablonları
 

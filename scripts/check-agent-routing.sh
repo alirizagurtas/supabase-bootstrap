@@ -109,3 +109,19 @@ rg -n 'Ne değişti.*Neden.*Doğrulama.*Kalan işler' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing Turkish PR body sections"
 ok "Turkish GitHub history discipline documented"
+
+rg -n 'Hata öğrenme döngüsü' \
+  "$ROOT_DIR/AGENTS.md" > /dev/null ||
+  fail "AGENTS.md missing failure learning rule"
+rg -n 'Failure log lazy-load edilir' \
+  "$ROOT_DIR/AGENTS.md" "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "lazy-load failure log rule missing"
+[[ -f "$ROOT_DIR/docs/failures/known-failures.md" ]] ||
+  fail "known failures log missing"
+rg -n 'projectCards|gh pr edit|gh api repos/OWNER/REPO/pulls/NUM' \
+  "$ROOT_DIR/docs/failures/known-failures.md" > /dev/null ||
+  fail "GitHub PR edit fallback not documented"
+rg -n 'Hata öğrenme ve fallback disiplini' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing failure fallback matrix"
+ok "failure learning loop documented"

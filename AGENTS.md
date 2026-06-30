@@ -63,6 +63,13 @@ This repository is Bash-first.
 - Pushlanan değişiklik kapsamı genişletirse aynı fazda PR gövdesi Türkçe
   `Ne değişti`, `Neden`, `Doğrulama` ve `Kalan işler` bölümleriyle güncellenir.
 
+## Hata öğrenme döngüsü
+
+- Tekrarlanabilir komut hataları aynı fazda sınıflandırılır ve çalışan fallback
+  bulunduysa `docs/failures/known-failures.md` içine kısa kayıt eklenir.
+- Failure log lazy-load edilir: tüm dosya varsayılan olarak okunmaz; yalnız hata
+  olduğunda veya bilinen riskli komut öncesinde hedefli `rg` ile aranır.
+
 ## Critical boundaries
 
 - `-y` never bypasses integrity or compatibility failures.

@@ -95,6 +95,28 @@ Eski commit geçmişi rebase edilerek yeniden yazılmaz. Yeni kayıtlar Türkçe
 tutulur; açık PR'ın başlığı ve gövdesi güncel kapsamı Türkçe anlatacak şekilde
 yenilenir.
 
+## Hata öğrenme ve fallback disiplini
+
+Tekrarlanabilir komut hataları öğrenme sinyalidir. Önce hata sınıflandırılır:
+ajan komut hatası, bilgi eskimesi, yazılım/API davranışı, ortam eksikliği,
+permission/sandbox veya geçici dış hata. Çalışan çözüm bulunduysa kısa kayıt
+`docs/failures/known-failures.md` içine yazılır.
+
+Failure log token tasarrufu için lazy-load edilir. Dosya her oturumda tamamen
+okunmaz. Hata olduğunda veya bilinen riskli komut tekrar çalıştırılacaksa
+yalnız ilgili metin hedefli aranır:
+
+```bash
+rg -n "projectCards|gh pr edit|GraphQL" docs/failures/known-failures.md
+```
+
+| Durum | Varsayılan | Hata olursa |
+| --- | --- | --- |
+| PR başlığı/gövdesi güncelleme | `gh pr edit` | `gh api repos/OWNER/REPO/pulls/NUM -X PATCH` |
+| PR/CI okuma | `rtk gh ...` | Exact JSON gerekiyorsa ham `gh ... --json ...` |
+| Exact API body | Ham `gh api` | Hata metniyle failure log içinde hedefli `rg` ara |
+| Bilinen riskli komut | Önce hedefli failure log araması | Kayıtlı fallback'i uygula ve sonucu güncelle |
+
 ## Doğrulama kanıtı
 
 2026-06-28 tarihinde aynı repository üzerinde:
