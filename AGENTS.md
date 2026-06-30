@@ -17,6 +17,8 @@ This repository is Bash-first.
 
 - Run the normal gate after any shell or shell-test change.
 - Run `--strict` for broad refactors and release changes.
+- During iteration, use RTK-wrapped gates; reserve raw commands for final
+  release evidence.
 - Release evidence also requires:
 
 ```bash
@@ -25,6 +27,8 @@ This repository is Bash-first.
 ```
 
 - Keep real-stack drills manual/scheduled, not in the daily gate.
+- Treat long-running tests and drills as single-shot commands. Poll them no
+  more often than every 30 seconds.
 
 ## Repository structure
 

@@ -58,6 +58,24 @@ dosyası veya mevcut executable üzerinden çalıştır.
   Codex geçmişini değil Claude Code geçmişini arar.
 - `rtk hook-audit`: RTK shell hook'u olmayan Codex akışında uygulanmaz.
 
+## Test ve drill disiplini
+
+Token şişmesinin ana kaynağı uzun testlerin çıktısı değil, uzun süreçleri sık
+poll etmektir. Bu yüzden doğrulama katmanları ayrı tutulur:
+
+| Katman | Komut | Ne zaman |
+| --- | --- | --- |
+| Hızlı günlük kapı | `rtk test ./scripts/check.sh` | Shell veya test değişikliğinden sonra |
+| Geniş kapı | `rtk test ./scripts/check.sh --strict` | Broad refactor veya release hazırlığında |
+| Ağır drill iterasyonu | `rtk err ./scripts/drills/integration-scenario.sh --scenario all` | Backup/restore/update kararları değiştiğinde |
+| CLI update drill iterasyonu | `rtk err ./scripts/drills/cli-update-drill.sh --scenario all` | Update/recovery davranışı değiştiğinde |
+| Final release kanıtı | Ham `./scripts/check.sh --strict` ve ham drill komutları | Sadece yayımlanacak kanıt gerektiğinde |
+
+Uzun komutlar tek-shot çalıştırılır. Çalışan test veya drill en fazla 30 saniye
+arayla poll edilir; başarılı uzun çıktı context'e basılmaz, özetlenir. Hata
+incelemesinde `rtk err`, test iterasyonunda `rtk test` kullanılır. Exact release
+kanıtı, hash, manifest veya tam çıktı gerekiyorsa ham komuta dönülür.
+
 ## Doğrulama kanıtı
 
 2026-06-28 tarihinde aynı repository üzerinde:

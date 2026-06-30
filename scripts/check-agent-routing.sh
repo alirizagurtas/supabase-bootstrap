@@ -81,3 +81,17 @@ ok "Serena installed/indexable and MCP disabled by default"
 
 rtk verify --require-all > /dev/null
 ok "rtk filters"
+
+rg -n 'Poll long commands no more often than every 30 seconds' \
+  "$ROOT_DIR/AGENTS.md" > /dev/null ||
+  fail "AGENTS.md missing long-command poll rule"
+rg -n 'rtk test \./scripts/check\.sh --strict' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing strict RTK gate"
+rg -n 'rtk err \./scripts/drills/integration-scenario\.sh --scenario all' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing RTK integration drill"
+rg -n 'Final release kanıtı' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing raw final evidence rule"
+ok "long test/drill discipline documented"

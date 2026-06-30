@@ -51,7 +51,7 @@ güncellenir.
 | Dosya | Görev |
 | --- | --- |
 | `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
-| `scripts/check-agent-routing.sh` | RTK, Serena, ast-grep ve rg araç yönlendirme kurallarını kontrollü fixture ile doğrular. |
+| `scripts/check-agent-routing.sh` | RTK, Serena, ast-grep, rg ve uzun test/drill disiplini kurallarını kontrollü fixture ile doğrular. |
 | `scripts/notify-on-failure.sh` | Sardığı komutun hatasını loglar ve yapılandırılmış executable hook'a bildirir. |
 | `scripts/systemd-backup.sh` | systemd environment değerlerini güvenli backup argümanlarına dönüştürür. |
 | `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
