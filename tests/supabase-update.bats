@@ -342,6 +342,7 @@ log_contains() {
   log_contains "supabase start"
   log_contains "docker exec supabase_db_project"
   [[ "$output" == *"Durum:  saglikli, calisiyor"* ]]
+  [[ "$output" == *"Yedegi dogrulamak: $SCRIPT_DIR/supabase-backup.sh --verify $FAKE_STATE/supabase-backups/backup-001"* ]]
 }
 
 @test "--reset requires restore-after and completes destructive recovery flow" {

@@ -1092,7 +1092,9 @@ print_summary() {
   printf '\n'
   detail "Log: ${LOG_FILE}"
   if [[ "$BACKUP_DONE" == true ]]; then
-    detail "Yedegi dogrulamak: ${BACKUP_SCRIPT/.sh/} --verify $(basename "$BACKUP_LOCATION")"
+    local verify_command
+    printf -v verify_command '%q --verify %q' "$BACKUP_SCRIPT" "$BACKUP_LOCATION"
+    detail "Yedegi dogrulamak: ${verify_command}"
   fi
 }
 
