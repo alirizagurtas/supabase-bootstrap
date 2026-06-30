@@ -1,4 +1,4 @@
-# Supabase operations runbook
+# Supabase operasyon runbook'u
 
 Bu runbook tek bir Supabase CLI-managed self-host stack'in local Linux veya
 Hetzner host üzerinde işletilmesi içindir. Ayrı bir Compose backend varsaymaz.
@@ -6,8 +6,10 @@ Hetzner host üzerinde işletilmesi içindir. Ayrı bir Compose backend varsayma
 ## Değişmez kurallar
 
 - Her mutasyon `supabase/config.toml` içindeki `project_id` ile sınırlandırılır.
-- Update başlamadan stack çalışıyor, backup doğrulanmış ve disk preflight geçmiş olmalıdır.
-- Volume backup stack durdurulurken alınır; işlem sonunda stack yeniden başlatılır.
+- Update başlamadan stack çalışıyor, backup doğrulanmış ve disk preflight geçmiş
+  olmalıdır.
+- Volume backup stack durdurulurken alınır; işlem sonunda stack yeniden
+  başlatılır.
 - `-y` manifest veya hash hatasını geçersiz kılamaz.
 - Mirror anahtarı repository dışında ve yalnız sahibi okuyabilecek izinle tutulur.
 - Restore provası yapılmamış backup, production recovery planı sayılmaz.

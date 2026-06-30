@@ -209,11 +209,11 @@ Durumlar:
 
 ## Sonuç
 
-Denetim tablosundaki tüm zorunlu dallar uygulanmıştır. Gercek disposable
+Denetim tablosundaki tüm zorunlu dallar uygulanmıştır. Gerçek disposable
 drill'lerde SQL restore, DB+Storage physical restore, Storage byte round-trip,
-sifreli mirror, CLI 2.107.0→2.108.0 update ve injected start-failure recovery
-gecmistir. Host tarafinda mirror hedefinin ve 0600 anahtar dosyasinin
-yapilandirilmasi deployment politikasidir.
+şifreli mirror, CLI 2.107.0→2.108.0 update ve injected start-failure recovery
+geçmiştir. Host tarafında mirror hedefinin ve 0600 anahtar dosyasının
+yapılandırılması deployment politikasıdır.
 
 2026-06-28 ek operasyon doğrulamaları:
 

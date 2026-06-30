@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Global Codex defaults. Keep detailed workflows in skills and docs.
+Global Codex varsayılanları. Detaylı workflow'lar skill ve dokümanlarda
+tutulur.
 
 ## Dil
 

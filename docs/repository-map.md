@@ -1,4 +1,4 @@
-# Repository map
+# Repository haritası
 
 Bu belge repository içindeki dosyaların canonical envanteridir. Yeni bir dosya
 eklendiğinde, taşındığında veya sorumluluğu değiştiğinde aynı değişiklik içinde
@@ -26,7 +26,7 @@ güncellenir.
 | --- | --- |
 | `README.md` | Kurulum, kullanım ve ana güvenlik sözleşmelerini açıklar. |
 | `AGENTS.md` | Bu repository üzerinde çalışan ajanların kalite ve güvenlik kurallarını tanımlar. |
-| `RTK.md` | Repository için kısa RTK/token disiplini entrypoint'idir; detayları `docs/agent-tool-routing.md` içine yönlendirir. |
+| `RTK.md` | Repository için kısa RTK/token disiplini giriş noktasıdır; detayları `docs/agent-tool-routing.md` içine yönlendirir. |
 | `.gitignore` | Editör swap dosyaları, operation journal ve yerel Supabase proje verisini Git dışında tutar. |
 | `.serena/project.yml` | Serena için Bash dilini, ignore kapsamını ve proje güvenlik başlangıç talimatını tanımlar. |
 | `.serena/.gitignore` | Serena indeks cache'i ile makineye özel ayarları Git dışında tutar. |

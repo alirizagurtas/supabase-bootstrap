@@ -1,4 +1,4 @@
-# Validation report
+# Doğrulama raporu
 
 Son güncelleme: 2026-06-28
 

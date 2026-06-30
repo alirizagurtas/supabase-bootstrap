@@ -1,10 +1,11 @@
 # Supabase Bootstrap
 
-Ubuntu sunucuyu Supabase self-host / local geliştirme ortamı için hazırlar.
+Ubuntu sunucuyu Supabase self-host veya yerel geliştirme ortamı için hazırlar.
 
 Bu repo sadece sistem gereksinimlerini kurar ve gerekirse mevcut Supabase/Docker geliştirme ortamını temizlemeye yardımcı olur.
 
-Proje SQL dosyaları, migration dosyaları, seed verileri, `.env` dosyaları ve secret bilgiler bu repoda tutulmaz.
+Proje SQL dosyaları, migration dosyaları, seed verileri, `.env` dosyaları ve
+secret bilgiler bu repoda tutulmaz.
 
 ## Dosyalar
 
@@ -20,21 +21,31 @@ supabase-bootstrap/
   lib/
     operation-state.sh
     service-health.sh
-  scripts/check.sh
-  scripts/notify-on-failure.sh
-  scripts/systemd-backup.sh
-  scripts/drills/
-    integration-scenario.sh
-    cli-update-drill.sh
+  scripts/
+    agent-token-report.sh
+    backup-codex-runtime.sh
+    check-agent-routing.sh
+    check.sh
+    notify-on-failure.sh
+    restore-codex-runtime.sh
+    systemd-backup.sh
+    drills/
+      cli-update-drill.sh
+      codex-runtime-restore-drill.sh
+      integration-scenario.sh
   tests/
   spec/
   docs/
+  docs/failures/
   deploy/systemd/
+  templates/codex/
+  AGENTS.md
+  RTK.md
 ```
 
 Eksiksiz dosya envanteri: `docs/repository-map.md`
 
-Production işletim adımları: `docs/operations-runbook.md`
+Üretim işletim adımları: `docs/operations-runbook.md`
 
 Doğrulama kaydı: `docs/validation-report.md`
 
@@ -52,27 +63,38 @@ Daha sıkı release/refactor kontrolü:
 ./scripts/check.sh --strict
 ```
 
-## Backup / restore güvenliği
+## Yedekleme / geri yükleme güvenliği
 
 - Backup dosyaları private izinlerle oluşturulur.
 - Manifest doğrulaması zorunlu SQL dump’larını ve tüm SHA-256 kayıtlarını kontrol eder.
 - Fiziksel Docker volume snapshot’ı sırasında stack kısa süreliğine durdurulur ve işlem sonunda yeniden başlatılır.
-- Non-interactive restore için güvenli varsayılan `sql` stratejisidir. Fiziksel volume restore açıkça `--strategy volume` ile seçilmelidir.
+- Non-interactive restore için güvenli varsayılan `sql` stratejisidir. Fiziksel
+  volume restore açıkça `--strategy volume` ile seçilmelidir.
 - `project_id`, dizin adından değil `supabase/config.toml` içinden okunur.
-- Update, backup, restore ve reset aynı proje kilidini ve kalıcı işlem journal'ını kullanır. CLI update ayrıca host-global kilit alır.
-- Update öncesi doğrulanmış backup ile stop/start zorunludur; `--no-backup` ve `--no-start` update akışında reddedilir.
-- Update yarıda kalırsa `bin/supabase-update.sh --recover --workdir <proje>` journal'daki backup ile recovery dener.
+- Update, backup, restore ve reset aynı proje kilidini ve kalıcı işlem
+  journal'ını kullanır. CLI update ayrıca host-global kilit alır.
+- Update öncesi doğrulanmış backup ile stop/start zorunludur; `--no-backup` ve
+  `--no-start` update akışında reddedilir.
+- Update yarıda kalırsa `bin/supabase-update.sh --recover --workdir <proje>`
+  journal'daki backup ile recovery dener.
 - İkinci failure-domain için `bin/supabase-backup.sh --mirror <dir> --mirror-key-file <0600-key>` kullanılır. Eşdeğer ortam değişkenleri `SUPABASE_BACKUP_MIRROR` ve `SUPABASE_BACKUP_KEY_FILE` değerleridir.
-- Physical volume arşivleri ownership, ACL ve Storage extended attribute metadata'sını korur.
-- Encrypted mirror arşivleri `bin/supabase-backup-maintenance.sh import-mirror` ile güvenli staging alanına alınır ve restore öncesi normal manifest doğrulamasından geçer.
-- Local ve mirror retention aynı bakım komutuyla yürütülür; her hedefte en yeni backup'lar `--keep-min` ile korunur.
-- Update, backup hedefi ve package staging filesystemleri için configurable boş alan preflight uygular.
-- systemd timer ve failure notification hook kurulumu `deploy/systemd/` altında sağlanır.
+- Physical volume arşivleri ownership, ACL ve Storage extended attribute
+  metadata'sını korur.
+- Encrypted mirror arşivleri `bin/supabase-backup-maintenance.sh import-mirror`
+  ile güvenli staging alanına alınır ve restore öncesi normal manifest
+  doğrulamasından geçer.
+- Local ve mirror retention aynı bakım komutuyla yürütülür; her hedefte en yeni
+  backup'lar `--keep-min` ile korunur.
+- Update, backup hedefi ve package staging filesystemleri için configurable boş
+  alan preflight uygular.
+- systemd timer ve failure notification hook kurulumu `deploy/systemd/` altında
+  sağlanır.
 
 Kanonik yaşam döngüsü ve kod uygunluk tablosu:
 `docs/lifecycle-decision-tree.md`
 
-`--strict`, tüm shell scriptlerde ShellCheck style seviyesini ve shfmt drift'ini bloklar.
+`--strict`, tüm shell scriptlerde ShellCheck style seviyesini ve shfmt drift'ini
+bloklar.
 
 Kullanılan araçlar:
 
@@ -84,13 +106,14 @@ shellspec
 checkbashisms
 ```
 
-Hızlı testler fake command ve fixture verilerle çalışır. Gerçek Supabase stack üzerinde hafif smoke:
+Hızlı testler fake command ve fixture verilerle çalışır. Gerçek Supabase stack
+üzerinde hafif smoke:
 
 ```bash
 ./scripts/drills/integration-scenario.sh
 ```
 
-Ağır release/drill senaryoları manuel/scheduled çalıştırılmalıdır:
+Ağır release/drill senaryoları manuel veya scheduled çalıştırılmalıdır:
 
 ```bash
 ./scripts/drills/integration-scenario.sh --scenario all

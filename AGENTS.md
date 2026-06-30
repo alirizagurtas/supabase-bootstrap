@@ -1,68 +1,70 @@
 # AGENTS.md
 
-## Supabase operations skill
+## Supabase operasyon skill'i
 
-For backup, restore, update, reset, Docker volume, journal, mirror, retention,
-systemd, recovery drill, or Hetzner lifecycle work, load and follow the
-`supabase-operations` skill. Its safety contracts are mandatory.
+Backup, restore, update, reset, Docker volume, journal, mirror, retention,
+systemd, recovery drill veya Hetzner yaşam döngüsü işi için
+`supabase-operations` skill'i yüklenir ve takip edilir. Güvenlik sözleşmeleri
+zorunludur.
 
-## Quality gate
+## Kalite kapısı
 
-This repository is Bash-first.
+Bu repository Bash-first çalışır.
 
 ```bash
 ./scripts/check.sh
 ./scripts/check.sh --strict
 ```
 
-- Run the normal gate after any shell or shell-test change.
-- Run `--strict` for broad refactors and release changes.
-- During iteration, use RTK-wrapped gates; reserve raw commands for final
-  release evidence.
-- Release evidence also requires:
+- Her shell veya shell-test değişikliğinden sonra normal kapıyı çalıştır.
+- Geniş refactor ve release değişikliklerinde `--strict` çalıştır.
+- İterasyon sırasında RTK ile sarılmış kapıları kullan; ham komutları final
+  release kanıtına sakla.
+- Release kanıtı ayrıca şunları gerektirir:
 
 ```bash
 ./scripts/drills/integration-scenario.sh --scenario all
 ./scripts/drills/cli-update-drill.sh --scenario all
 ```
 
-- Keep real-stack drills manual/scheduled, not in the daily gate.
-- Treat long-running tests and drills as single-shot commands. Poll them no
-  more often than every 30 seconds.
+- Gerçek stack drill'lerini günlük kapıya koyma; manuel veya scheduled tut.
+- Uzun test ve drill komutlarını tek-shot çalıştır. En fazla 30 saniyede bir
+  poll et.
 
-## Repository structure
+## Repository yapısı
 
-- User commands: `bin/`
-- Shared sourced Bash: `lib/`
-- Development automation: `scripts/`
-- Real-stack drills: `scripts/drills/`
-- Tests: `tests/` and `spec/`
-- Decisions and runbooks: `docs/`
-- Keep `docs/repository-map.md` synchronized with structural changes.
+- Kullanıcı komutları: `bin/`
+- Ortak sourced Bash kodu: `lib/`
+- Geliştirme otomasyonu: `scripts/`
+- Gerçek stack drill'leri: `scripts/drills/`
+- Testler: `tests/` ve `spec/`
+- Kararlar ve runbook'lar: `docs/`
+- Yapısal değişikliklerde `docs/repository-map.md` güncel tutulur.
 
-## RTK and context
+## RTK ve context
 
-- Read `RTK.md` before shell work; it is the short repo entrypoint for token
-  discipline.
-- Follow `docs/agent-tool-routing.md`; validate routing with
+- Shell işi öncesinde `RTK.md` oku; token disiplini için kısa repository
+  giriş noktasıdır.
+- `docs/agent-tool-routing.md` takip edilir; routing şu komutla doğrulanır:
   `./scripts/check-agent-routing.sh`.
-- Serena MCP is disabled by default; enable it only on explicit user request.
-  Otherwise use `ast-grep` for syntax structure, `rg` for exact text, and
-  explicit RTK for supported output expected to exceed about 10 lines.
-- Use raw commands for short output, exact integrity evidence, or incomplete
-  filters. Never use `rtk run` or `rtk proxy` for token savings.
-- Poll long commands no more often than every 30 seconds.
-- After a completed research, implementation, or validation phase, recommend `/compact` before an unrelated phase.
-- For "status", "son durum", or summary-only questions, inspect existing
-  evidence first; do not rerun strict gates or drills unless the evidence is
-  missing, stale, or the user explicitly asks.
-- For token-sensitive work, keep Fast mode off unless the user explicitly
-  chooses speed over quota. Use low reasoning for trivial work, medium by
-  default, and high only for complex recovery, security, or ambiguous
-  production decisions.
-- Use `./scripts/agent-token-report.sh` after token-discipline changes and
-  `./scripts/agent-token-report.sh --check` when a repeatable local threshold
-  gate is needed.
+- Serena MCP varsayılan olarak kapalıdır; yalnız açık kullanıcı isteğiyle
+  etkinleştirilir. Aksi halde sözdizimsel yapı için `ast-grep`, tam metin için
+  `rg`, yaklaşık 10 satırdan uzun desteklenen çıktı için açık RTK kullanılır.
+- Kısa çıktı, exact bütünlük kanıtı veya eksik filtre durumunda ham komut
+  kullanılır. Token tasarrufu için asla `rtk run` veya `rtk proxy` kullanılmaz.
+- Uzun komutlar en fazla 30 saniyede bir poll edilir.
+- Araştırma, implementasyon veya doğrulama fazı bitince alakasız yeni fazdan
+  önce `/compact` önerilir.
+- "status", "son durum" veya yalnız özet isteyen sorularda önce mevcut kanıt
+  incelenir; kanıt eksik/eski değilse veya kullanıcı açıkça istemediyse strict
+  gate ya da drill tekrar çalıştırılmaz.
+- Token hassas işlerde kullanıcı hızı kotaya tercih ettiğini açıkça söylemedikçe
+  Fast mode kapalı tutulur. Trivial işte low, varsayılan olarak medium, yalnız
+  karmaşık recovery/security/ambiguous production kararlarında high reasoning
+  kullanılır.
+- Token disiplini değişikliklerinden sonra `./scripts/agent-token-report.sh`,
+  tekrar edilebilir yerel eşik gerektiğinde
+  `./scripts/agent-token-report.sh --check` çalıştırılır.
 
 ## GitHub ve kayıt dili
 
@@ -82,18 +84,25 @@ This repository is Bash-first.
 - Failure log lazy-load edilir: tüm dosya varsayılan olarak okunmaz; yalnız hata
   olduğunda veya bilinen riskli komut öncesinde hedefli `rg` ile aranır.
 
-## Critical boundaries
+## Kritik sınırlar
 
-- `-y` never bypasses integrity or compatibility failures.
-- Resolve destructive scope from canonical `supabase/config.toml` and `project_id`, never basenames.
-- Keep global Docker prune disabled.
-- Physical volume snapshots require a stopped stack and guaranteed restart.
-- A CLI update requires verified backup, stop/start, health verification, and recovery.
-- Keep `supabase/`, `.supabase-ops/`, keys, logs, backups, and temporary drill state out of Git.
+- `-y`, bütünlük veya uyumluluk hatalarını asla bypass etmez.
+- Yıkıcı kapsam basename'den değil, kanonik `supabase/config.toml` ve
+  `project_id` değerinden çözülür.
+- Global Docker prune kapalı tutulur.
+- Fiziksel volume snapshot için stack durdurulmuş olmalı ve yeniden başlatma
+  garanti edilmelidir.
+- CLI update; doğrulanmış backup, stop/start, health doğrulaması ve recovery
+  gerektirir.
+- `supabase/`, `.supabase-ops/`, key dosyaları, loglar, backup'lar ve geçici
+  drill state Git dışında tutulur.
 
 ## Supabase MCP
 
-- `supabase-local` is `http://127.0.0.1:54321/mcp`.
-- MCP is read-only by default; mutations require explicit user authorization.
-- MCP complements schema/query/debug work and never replaces lifecycle scripts.
-- Hetzner MCP access requires VPN or SSH tunnel; never expose it publicly.
+- `supabase-local`: `http://127.0.0.1:54321/mcp`.
+- MCP varsayılan olarak read-only kullanılır; mutasyon için açık kullanıcı
+  onayı gerekir.
+- MCP, schema/query/debug işlerini tamamlar; lifecycle scriptlerinin yerini
+  almaz.
+- Hetzner MCP erişimi VPN veya SSH tunnel gerektirir; endpoint public internete
+  açılmaz.

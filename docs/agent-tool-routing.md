@@ -1,4 +1,4 @@
-# Agent tool routing
+# Ajan araç yönlendirmesi
 
 Bu belge Codex'in repository üzerinde hangi aracı hangi amaçla kullanacağını
 tanımlar. Kuralların çalıştığı şu komutla doğrulanır:
@@ -10,7 +10,7 @@ tanımlar. Kuralların çalıştığı şu komutla doğrulanır:
 ## Karar sırası
 
 1. Serena MCP varsayılan olarak kapalıdır. Yalnız kullanıcı açıkça Serena
-   istediğinde etkinleştir ve fonksiyon, symbol, çağıran veya referans için kullan.
+   istediğinde etkinleştir ve fonksiyon, sembol, çağıran veya referans için kullan.
 2. Serena kapalıyken veya soru kodun sözdizimsel yapısı hakkındaysa `ast-grep`
    kullan.
 3. Soru düz metin, config, doküman veya hata mesajı hakkındaysa `rg` kullan.
@@ -66,7 +66,7 @@ poll etmektir. Bu yüzden doğrulama katmanları ayrı tutulur:
 | Katman | Komut | Ne zaman |
 | --- | --- | --- |
 | Hızlı günlük kapı | `rtk test ./scripts/check.sh` | Shell veya test değişikliğinden sonra |
-| Geniş kapı | `rtk test ./scripts/check.sh --strict` | Broad refactor veya release hazırlığında |
+| Geniş kapı | `rtk test ./scripts/check.sh --strict` | Geniş refactor veya release hazırlığında |
 | Ağır drill iterasyonu | `rtk err ./scripts/drills/integration-scenario.sh --scenario all` | Backup/restore/update kararları değiştiğinde |
 | CLI update drill iterasyonu | `rtk err ./scripts/drills/cli-update-drill.sh --scenario all` | Update/recovery davranışı değiştiğinde |
 | Final release kanıtı | Ham `./scripts/check.sh --strict` ve ham drill komutları | Sadece yayımlanacak kanıt gerektiğinde |

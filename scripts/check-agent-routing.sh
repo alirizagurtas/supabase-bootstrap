@@ -63,7 +63,7 @@ rtk_err=$(rtk err "$TMP_DIR/warning.sh" 2>&1)
 ok "rtk err keeps warnings"
 
 rtk git -C "$ROOT_DIR" status --short > /dev/null
-rtk rg -n 'Supabase operations skill' "$ROOT_DIR/AGENTS.md" > /dev/null
+rtk rg -n "Supabase operasyon skill'i" "$ROOT_DIR/AGENTS.md" > /dev/null
 rtk find "$ROOT_DIR/bin" -type f > /dev/null
 ok "rtk git/rg/find routes"
 
@@ -93,7 +93,7 @@ ok "Serena installed/indexable and MCP disabled by default"
 rtk verify --require-all > /dev/null
 ok "rtk filters"
 
-rg -n 'Poll long commands no more often than every 30 seconds' \
+rg -n 'Uzun komutlar.*30 saniye|Uzun test ve drill.*30 saniye' \
   "$ROOT_DIR/AGENTS.md" > /dev/null ||
   fail "AGENTS.md missing long-command poll rule"
 rg -n 'rtk test \./scripts/check\.sh --strict' \
@@ -108,7 +108,7 @@ rg -n 'status.*son durum' \
 rg -n 'Strict gate veya ağır drill tekrar çalıştırılmaz' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "status question no-rerun rule missing"
-rg -n 'Fast mode kapalı varsayılır' \
+rg -n 'Fast mode kapalı (varsayılır|tutulur)' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "Fast mode quota rule missing"
 rg -n 'Subagent ana thread kirliliğini azaltabilir' \
