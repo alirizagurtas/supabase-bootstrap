@@ -40,6 +40,18 @@ collect_shell_scripts() {
     sort
 }
 
+run_git_diff_check() {
+  log "STEP" "git diff --check"
+  git -C "$ROOT_DIR" diff --check
+  log "OK" "git diff --check"
+}
+
+run_security_check() {
+  log "STEP" "security check"
+  "$ROOT_DIR/scripts/security-check.sh"
+  log "OK" "security check"
+}
+
 run_syntax_check() {
   local file
 
@@ -150,6 +162,7 @@ main() {
   (($# == 0)) || fail "Unknown argument: $1"
 
   require_cmd bash
+  require_cmd git
   require_cmd shellcheck
   require_cmd shfmt
   require_cmd bats
@@ -157,6 +170,8 @@ main() {
   require_cmd shellspec
   require_cmd systemd-analyze
 
+  run_git_diff_check
+  run_security_check
   run_syntax_check
   run_shellcheck
   run_shfmt

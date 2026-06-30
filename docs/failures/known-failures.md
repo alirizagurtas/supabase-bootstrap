@@ -107,3 +107,39 @@ işaret etsin.
 AGENTS içinde referans verilen repo-local talimat dosyaları version-controlled
 olarak bulunmalıdır. Yapı değişirse `docs/repository-map.md` aynı değişiklikte
 güncellenir.
+
+## `rtk rewrite` çıktı üretip non-zero exit döndürebilir
+
+### Belirti
+
+RTK 0.43.0 üzerinde desteklenen rewrite çıktısı üretilmesine rağmen komut
+non-zero exit code döndürebilir:
+
+```bash
+rtk rewrite "git status --short"
+```
+
+Örnek çıktı:
+
+```text
+rtk git status --short
+```
+
+### Sınıflandırma
+
+RTK CLI davranış farkı. Help metni desteklenen rewrite için başarılı çıkış
+beklentisi oluşturur; bu ortamda güvenilir sinyal stdout içeriğidir.
+
+### Fallback / çözüm
+
+Script içinde rewrite sonucu okunurken exit code'a değil, stdout'un boş olup
+olmadığına ve beklenen `rtk ...` rotasını içerip içermediğine bak:
+
+```bash
+rewritten=$(rtk rewrite "git status --short" || true)
+```
+
+### Kural
+
+`rtk rewrite` karar destek komutudur. Automation içinde non-zero exit tek başına
+failure sayılmaz; boş veya beklenmeyen stdout failure sayılır.

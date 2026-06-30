@@ -18,6 +18,8 @@ Bu repository Bash-first çalışır.
 
 - Her shell veya shell-test değişikliğinden sonra normal kapıyı çalıştır.
 - Geniş refactor ve release değişikliklerinde `--strict` çalıştır.
+- Normal kapı `git diff --check` ve hafif `gitleaks` worktree secret scan de
+  çalıştırır.
 - İterasyon sırasında RTK ile sarılmış kapıları kullan; ham komutları final
   release kanıtına sakla.
 - Release kanıtı ayrıca şunları gerektirir:
@@ -30,6 +32,10 @@ Bu repository Bash-first çalışır.
 - Gerçek stack drill'lerini günlük kapıya koyma; manuel veya scheduled tut.
 - Uzun test ve drill komutlarını tek-shot çalıştır. En fazla 30 saniyede bir
   poll et.
+- `./scripts/check.sh` ve `./scripts/check.sh --strict` aynı anda paralel
+  çalıştırılmaz; ikisi de aynı stateful Bats suite'ini kullanır.
+- Bats paralelliği varsayılan değildir; mevcut suite stateful testler nedeniyle
+  paralel çalışmada flaky davranış üretmiştir.
 
 ## Repository yapısı
 
@@ -40,6 +46,9 @@ Bu repository Bash-first çalışır.
 - Testler: `tests/` ve `spec/`
 - Kararlar ve runbook'lar: `docs/`
 - Yapısal değişikliklerde `docs/repository-map.md` güncel tutulur.
+- Dokümantasyon hizası için `docs/documentation-model.md` takip edilir.
+- Yeni araç veya paket önkoşulunda `docs/dependencies.md` ve gerekirse
+  `scripts/doctor.sh` aynı değişiklik içinde güncellenir.
 
 ## RTK ve context
 
@@ -47,6 +56,8 @@ Bu repository Bash-first çalışır.
   giriş noktasıdır.
 - `docs/agent-tool-routing.md` takip edilir; routing şu komutla doğrulanır:
   `./scripts/check-agent-routing.sh`.
+- RTK kapsamı ve alt komut davranışı `./scripts/check-rtk-command-matrix.sh`
+  ile doğrulanır; bu test geçmeden RTK kullanım kuralı değiştirilmiş sayılmaz.
 - Serena MCP varsayılan olarak kapalıdır; yalnız açık kullanıcı isteğiyle
   etkinleştirilir. Aksi halde sözdizimsel yapı için `ast-grep`, tam metin için
   `rg`, yaklaşık 10 satırdan uzun desteklenen çıktı için açık RTK kullanılır.

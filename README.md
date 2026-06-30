@@ -28,6 +28,7 @@ supabase-bootstrap/
     check.sh
     notify-on-failure.sh
     restore-codex-runtime.sh
+    security-check.sh
     systemd-backup.sh
     drills/
       cli-update-drill.sh
@@ -49,6 +50,10 @@ Eksiksiz dosya envanteri: `docs/repository-map.md`
 
 Doğrulama kaydı: `docs/validation-report.md`
 
+Dokümantasyon modeli: `docs/documentation-model.md`
+
+Dependency manifesti: `docs/dependencies.md`
+
 ## Geliştirme kontrolleri
 
 Shell script değişikliğinden sonra çalıştır:
@@ -57,10 +62,35 @@ Shell script değişikliğinden sonra çalıştır:
 ./scripts/check.sh
 ```
 
+Bu kapı `git diff --check`, hafif secret scan, Bash syntax, ShellCheck, shfmt,
+checkbashisms, systemd unit doğrulaması, Bats ve ShellSpec kontrollerini
+çalıştırır.
+
 Daha sıkı release/refactor kontrolü:
 
 ```bash
 ./scripts/check.sh --strict
+```
+
+RTK komut matrisi veya token disiplini değiştiyse:
+
+```bash
+./scripts/check-rtk-command-matrix.sh
+./scripts/check-agent-routing.sh
+```
+
+Eksik geliştirme/runtime araçlarını raporlamak için:
+
+```bash
+./scripts/doctor.sh
+./scripts/doctor.sh --required-only
+```
+
+Ubuntu/Debian üzerinde apt-managed geliştirme araçlarını kurmak için:
+
+```bash
+./scripts/bootstrap-dev-tools.sh --dry-run
+./scripts/bootstrap-dev-tools.sh --yes
 ```
 
 ## Yedekleme / geri yükleme güvenliği
@@ -104,6 +134,13 @@ shfmt
 bats
 shellspec
 checkbashisms
+gitleaks
+```
+
+Secret scan doğrudan da çalıştırılabilir:
+
+```bash
+./scripts/security-check.sh
 ```
 
 Hızlı testler fake command ve fixture verilerle çalışır. Gerçek Supabase stack

@@ -30,21 +30,31 @@ kapalı tutulur. Böylece gerektiğinde yeniden kurulum yapmadan etkinleştirile
 
 | Amaç | Komut | Kural |
 | --- | --- | --- |
+| RTK karşılığı bulma | `rtk rewrite "<raw command>"` | Ham komutun desteklenen RTK rotası var mı önce bununla kontrol et; RTK 0.43.0 üzerinde stdout'u esas al, exit code'a tek başına güvenme. |
 | Test iterasyonu | `rtk test <command>` | Başarısızlık odaklıdır; nihai release kanıtını ham çalıştır. |
 | Hata inceleme | `rtk err <command>` | Normal başarı çıktısını saklar; yalnız hata ve uyarı yeterliyse kullan. |
 | Git | `rtk git status\|log\|diff\|show` | Ön incelemede kullan; exact patch gerekirse dar ham `git diff -- <path>` çalıştır. |
 | GitHub | `rtk gh pr\|issue\|run` | PR, issue ve Actions çıktısında kullan. |
 | Büyük metin arama | `rtk rg <pattern> <path>` | Küçük sonuçta doğrudan `rg` daha uygundur. |
-| Dosya keşfi | `rtk find`, `rtk tree`, `rtk ls` | Büyük envanterde kullan. |
-| Dosya okuma | `rtk read --max-lines N` | Keşif içindir; patch öncesi gerekli exact bağlamı oku. |
-| Altyapı | `rtk docker`, `rtk psql` | Liste, log ve tablo çıktısını küçültür. |
-| API/veri | `rtk curl`, `rtk json` | Exact response, hash veya imza kontrolünde ham çıktı kullan. |
+| Metin arama alternatifi | `rtk grep` | `rg` yoksa veya grep uyumlu çıktı gerekiyorsa kullan. |
+| Dosya keşfi | `rtk find`, `rtk tree`, `rtk ls` | Büyük envanterde kullan; `find . -type f`, `ls -R`, ham `tree` yerine tercih et. |
+| Dosya okuma | `rtk read --max-lines N`, `rtk read -l aggressive` | `cat` yerine kullan; patch öncesi gerekli exact bağlamı dar oku. |
+| Satır/byte sayımı | `rtk wc` | Büyük dosya boyutu veya satır sayısı bakarken ham `wc` çıktısını küçültür. |
+| Altyapı | `rtk docker ps\|images\|logs`, `rtk psql` | Liste, log ve tablo çıktısını küçültür; mutasyon komutlarında ham niyet ayrıca kontrol edilir. |
+| API/veri | `rtk curl`, `rtk json --keys-only` | Exact response, hash veya imza kontrolünde ham çıktı kullan. |
 | Log | `rtk log` | Tekrarlı logları gruplayıp küçültür. |
+| Dependency/env keşfi | `rtk deps`, `rtk env --filter <NAME>` | İlk keşif için kullan; secret içerebilecek env çıktısında filtre şarttır. |
 | Ölçüm/bakım | `rtk gain`, `rtk verify` | Faz sonunda ölç; RTK değişikliğinden sonra filtreleri doğrula. |
 
 `rtk smart` ve `rtk summary` sezgiseldir; yalnız ilk keşifte kullanılabilir.
 `rtk pipe` yalnız bilinen uygun bir filtre varsa kullanılır.
 `--ultra-compact` yalnız büyük ara çıktılarda kullanılır.
+RTK komut kapsamı ve davranışı şu testle doğrulanır:
+
+```bash
+./scripts/check-rtk-command-matrix.sh
+```
+
 Karmaşık `bash -c '...'` ifadelerini `rtk test` veya `rtk err` argümanı olarak
 geçirme; RTK argüman birleştirmesi quoting'i bozabilir. Böyle bir akışı script
 dosyası veya mevcut executable üzerinden çalıştır.
@@ -54,9 +64,12 @@ dosyası veya mevcut executable üzerinden çalıştır.
 - `rtk run`: ham çalıştırır, filtrelemez ve takip etmez.
 - `rtk proxy`: filtrelemez, yalnız takip eder.
 - `rtk diff`: repository diff'i değildir; iki dosyayı karşılaştırır.
-- `rtk discover`, `rtk session`, `rtk learn`, `rtk cc-economics`: bu ortamda
-  Codex geçmişini değil Claude Code geçmişini arar.
-- `rtk hook-audit`: RTK shell hook'u olmayan Codex akışında uygulanmaz.
+- `rtk discover`, `rtk session`, `rtk learn`, `rtk cc-economics`: help
+  metinlerine göre Claude Code geçmişi ve ekonomisi içindir; bu Codex
+  repository akışında varsayılan kullanılmaz.
+- `rtk learn --write-rules`: `.claude/` altında kural dosyası yazabilir; açık
+  kullanıcı isteği olmadan çalıştırılmaz.
+- `rtk hook-audit`: RTK shell hook'u ve `RTK_HOOK_AUDIT=1` olmadan uygulanmaz.
 
 ## Test ve drill disiplini
 
@@ -67,6 +80,7 @@ poll etmektir. Bu yüzden doğrulama katmanları ayrı tutulur:
 | --- | --- | --- |
 | Hızlı günlük kapı | `rtk test ./scripts/check.sh` | Shell veya test değişikliğinden sonra |
 | Geniş kapı | `rtk test ./scripts/check.sh --strict` | Geniş refactor veya release hazırlığında |
+| Güvenlik kapısı | `rtk test ./scripts/security-check.sh` | Secret scan ayrı doğrulanmak istendiğinde |
 | Ağır drill iterasyonu | `rtk err ./scripts/drills/integration-scenario.sh --scenario all` | Backup/restore/update kararları değiştiğinde |
 | CLI update drill iterasyonu | `rtk err ./scripts/drills/cli-update-drill.sh --scenario all` | Update/recovery davranışı değiştiğinde |
 | Final release kanıtı | Ham `./scripts/check.sh --strict` ve ham drill komutları | Sadece yayımlanacak kanıt gerektiğinde |
@@ -75,6 +89,12 @@ Uzun komutlar tek-shot çalıştırılır. Çalışan test veya drill en fazla 3
 arayla poll edilir; başarılı uzun çıktı context'e basılmaz, özetlenir. Hata
 incelemesinde `rtk err`, test iterasyonunda `rtk test` kullanılır. Exact release
 kanıtı, hash, manifest veya tam çıktı gerekiyorsa ham komuta dönülür.
+
+Bats paralelliği bu repository'de varsayılan değildir. 2026-06-30 ölçümünde
+seri Bats yaklaşık 10,7 saniye sürmüş, `--jobs 2` daha yavaş kalmış ve
+`--jobs 4` state çakışması üretmiştir.
+`./scripts/check.sh` ve `./scripts/check.sh --strict` de aynı anda paralel
+çalıştırılmaz; ikisi aynı stateful Bats suite'ini kullanır.
 
 ## Token/kota disiplini
 

@@ -53,12 +53,16 @@ güncellenir.
 
 | Dosya | Görev |
 | --- | --- |
-| `scripts/check.sh` | Syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
+| `scripts/check.sh` | `git diff --check`, secret scan, syntax, ShellCheck, shfmt, Bats ve ShellSpec kalite kapısını çalıştırır. |
 | `scripts/check-agent-routing.sh` | RTK, Serena, ast-grep, rg ve uzun test/drill disiplini kurallarını kontrollü fixture ile doğrular. |
+| `scripts/check-rtk-command-matrix.sh` | RTK alt komutlarını production state'e dokunmadan fixture tabanlı smoke test eder. |
 | `scripts/agent-token-report.sh` | RTK token tasarrufunu ve fallback sayısını düşük-token raporlar; `--check` ile eşik kapısı sağlar. |
 | `scripts/backup-codex-runtime.sh` | Global Codex runtime için memory, session, skill ve secretsız config backup artifact'i üretir. |
+| `scripts/bootstrap-dev-tools.sh` | Apt-managed geliştirme/test araçlarını güvenli `--dry-run` ve `--yes` akışıyla kurar. |
+| `scripts/doctor.sh` | Repository dependency manifestindeki required/runtime/optional araçları raporlar. |
 | `scripts/restore-codex-runtime.sh` | Codex runtime backup artifact'ini safety copy alarak restore eder ve araç durumunu raporlar. |
 | `scripts/notify-on-failure.sh` | Sardığı komutun hatasını loglar ve yapılandırılmış executable hook'a bildirir. |
+| `scripts/security-check.sh` | `gitleaks detect --no-git --redact --log-level error` ile hafif worktree secret scan çalıştırır. |
 | `scripts/systemd-backup.sh` | systemd environment değerlerini güvenli backup argümanlarına dönüştürür. |
 | `scripts/drills/integration-scenario.sh` | Gerçek disposable stack üzerinde smoke, SQL ve volume restore senaryolarını çalıştırır. |
 | `scripts/drills/cli-update-drill.sh` | Gerçek CLI sürümleriyle update ve zorlanmış recovery senaryolarını çalıştırır. |
@@ -77,6 +81,9 @@ güncellenir.
 | `tests/service-health.bats` | Gateway sağlık problarının başarı ve hata davranışlarını test eder. |
 | `tests/supabase-update.bats` | Update, restore delegation, stop/start ve hata akışlarını fake komutlarla test eder. |
 | `tests/codex-runtime-backup.bats` | Codex runtime backup/restore scriptlerinin kapsam, secret dışlama ve dry-run davranışını test eder. |
+| `tests/bootstrap-dev-tools.bats` | Apt bootstrap scriptinin dry-run, güvenli onay ve argüman davranışını test eder. |
+| `tests/doctor.bats` | Dependency doctor scriptinin required-only ve hata davranışını test eder. |
+| `tests/security-check.bats` | Secret scan wrapper'ının doğru gitleaks flag'leriyle çalıştığını ve leak durumunda fail ettiğini test eder. |
 
 ### ShellSpec
 
@@ -89,6 +96,8 @@ güncellenir.
 | Dosya | Görev |
 | --- | --- |
 | `docs/repository-map.md` | Klasör sözleşmesini ve tüm version-controlled dosyaların görevini listeler. |
+| `docs/documentation-model.md` | Docs-as-code, Diátaxis sınıflandırması, tek kaynak ve güncelleme tetikleyici kurallarını tanımlar. |
+| `docs/dependencies.md` | Required, runtime ve optional araçları `package.json` benzeri manifest olarak listeler. |
 | `docs/agent-tool-routing.md` | RTK, Serena, ast-grep, rg ve ham komut seçim kurallarını ve ölçüm kanıtını tanımlar. |
 | `docs/lifecycle-decision-tree.md` | CLI-managed self-host yaşam döngüsünün canonical karar ağacını ve kod uygunluğunu tutar. |
 | `docs/integration-scenarios.md` | Hızlı testler ile gerçek stack drill'lerinin kapsamını ve komutlarını açıklar. |

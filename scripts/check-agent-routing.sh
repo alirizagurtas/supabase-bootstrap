@@ -93,12 +93,24 @@ ok "Serena installed/indexable and MCP disabled by default"
 rtk verify --require-all > /dev/null
 ok "rtk filters"
 
+"$ROOT_DIR/scripts/check-rtk-command-matrix.sh" > /dev/null
+ok "rtk command matrix"
+
 rg -n 'Uzun komutlar.*30 saniye|Uzun test ve drill.*30 saniye' \
   "$ROOT_DIR/AGENTS.md" > /dev/null ||
   fail "AGENTS.md missing long-command poll rule"
 rg -n 'rtk test \./scripts/check\.sh --strict' \
   "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "agent routing missing strict RTK gate"
+rg -n 'rtk rewrite "<raw command>"' \
+  "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "agent routing missing RTK rewrite rule"
+rg -n 'stdout.*exit code' \
+  "$ROOT_DIR/RTK.md" "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "RTK rewrite stdout/exit-code caveat missing"
+rg -n '\./scripts/check-rtk-command-matrix\.sh' \
+  "$ROOT_DIR/AGENTS.md" "$ROOT_DIR/RTK.md" "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
+  fail "RTK command matrix gate missing"
 rg -n '\./scripts/agent-token-report\.sh --check' \
   "$ROOT_DIR/AGENTS.md" "$ROOT_DIR/docs/agent-tool-routing.md" > /dev/null ||
   fail "token report threshold gate missing"

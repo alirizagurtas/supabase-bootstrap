@@ -16,12 +16,20 @@ aşamasındadır.
 
 Kontrol edilenler:
 
+- Git whitespace/conflict-marker kontrolü
+- Hafif `gitleaks` worktree secret scan
 - Bash syntax
 - ShellCheck style seviyesi
 - shfmt
-- 67 Bats davranış testi: PASS
+- 79 Bats davranış testi: PASS
 - 2 ShellSpec örneği: PASS
 - systemd service/timer syntax doğrulaması: PASS
+
+Not: Bats paralelliği 2026-06-30 tarihinde denendi. Seri çalışma yaklaşık
+10,7 saniye sürdü. `bats --jobs 2 tests` yaklaşık 28 saniyeye çıktı;
+`bats --jobs 4 tests` ise `tests/backup-restore-contracts.bats` içinde
+state çakışması/flaky davranış üretti. Bu nedenle Bats paralelliği kalite
+kapısında varsayılan değildir.
 
 ## Gerçek stack drill
 
@@ -69,4 +77,4 @@ Hetzner aşamasında tamamlanacaklar:
 - Eksik `config.toml` durumunun container adından tahmin edilmeden durması: PASS
 - Disposable drill HOME ve pre-restore backup output izolasyonu: PASS
 - `supabase start` status JSON çıktısının otomasyon loglarından bastırılması: PASS
-- Strict kalite kapısı: 67 Bats + 2 ShellSpec: PASS
+- Strict kalite kapısı: 79 Bats + 2 ShellSpec: PASS
