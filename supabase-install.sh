@@ -246,6 +246,7 @@ require_command deno
 ok "Deno kuruldu: $(deno --version | head -n 1)"
 
 step "12. Supabase CLI standalone binary kuruluyor"
+
 SUPABASE_ARCH="$(uname -m)"
 
 case "$SUPABASE_ARCH" in
@@ -269,13 +270,24 @@ curl -fsSL \
 
 tar -xzf "$TMP_DIR/supabase.tar.gz" -C "$TMP_DIR"
 
-if [ ! -f "$TMP_DIR/supabase" ]; then
-  fail "Arşiv içinde Supabase binary bulunamadı"
-fi
+for binary in supabase supabase-go; do
+  if [ ! -f "$TMP_DIR/$binary" ]; then
+    fail "Arşiv içinde $binary bulunamadı"
+  fi
 
-sudo install -m 0755 "$TMP_DIR/supabase" /usr/local/bin/supabase
+  sudo install -m 0755 \
+    "$TMP_DIR/$binary" \
+    "/usr/local/bin/$binary"
+done
+
+hash -r
 
 require_command supabase
+
+if [ ! -x /usr/local/bin/supabase-go ]; then
+  fail "supabase-go kurulamadı"
+fi
+
 ok "Supabase CLI kuruldu: $(supabase --version)"
 
 step "13. Kurulum kontrolleri"
