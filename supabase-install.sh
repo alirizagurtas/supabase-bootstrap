@@ -3,7 +3,7 @@ set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-24}"
 SUPABASE_CHANNEL="${SUPABASE_CHANNEL:-stable}"
-SUPABASE_VERSION="${SUPABASE_VERSION:-2.95.5}"
+SUPABASE_VERSION="${SUPABASE_VERSION:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,7 +25,7 @@ warn() {
 }
 
 fail() {
-  echo -e "${RED}HATA:${NC} $1"
+  echo -e "${RED}HATA:${NC} $1" >&2
   exit 1
 }
 
@@ -74,23 +74,37 @@ print_header() {
 }
 
 resolve_supabase_version() {
-  if [ "$SUPABASE_CHANNEL" = "latest" ]; then
-    step "En güncel Supabase CLI sürümü çözümleniyor"
+  case "$SUPABASE_CHANNEL" in
+    stable | latest)
+      step "En güncel stable Supabase CLI sürümü çözümleniyor"
 
-    require_command curl
-    require_command jq
+      require_command curl
+      require_command jq
 
-    SUPABASE_VERSION="$(
-      curl -fsSL https://api.github.com/repos/supabase/cli/releases/latest |
-        jq -r '.tag_name' |
-        sed 's/^v//'
-    )"
+      SUPABASE_VERSION="$(
+        curl -fsSL https://api.github.com/repos/supabase/cli/releases/latest |
+          jq -r '.tag_name' |
+          sed 's/^v//'
+      )"
+      ;;
 
-    if [ -z "$SUPABASE_VERSION" ] || [ "$SUPABASE_VERSION" = "null" ]; then
-      fail "En güncel Supabase CLI sürümü çözümlenemedi"
-    fi
-  elif [ "$SUPABASE_CHANNEL" != "stable" ]; then
-    fail "Geçersiz SUPABASE_CHANNEL: $SUPABASE_CHANNEL. stable veya latest kullan"
+    pinned)
+      if [ -z "$SUPABASE_VERSION" ]; then
+        fail "SUPABASE_CHANNEL=pinned için SUPABASE_VERSION belirtilmeli"
+      fi
+      ;;
+
+    *)
+      fail "Geçersiz SUPABASE_CHANNEL: $SUPABASE_CHANNEL. stable, latest veya pinned kullan"
+      ;;
+  esac
+
+  if [ -z "$SUPABASE_VERSION" ] || [ "$SUPABASE_VERSION" = "null" ]; then
+    fail "Supabase CLI sürümü çözümlenemedi"
+  fi
+
+  if [[ ! "$SUPABASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+    fail "Geçersiz Supabase CLI sürümü: $SUPABASE_VERSION"
   fi
 
   ok "Supabase CLI sürümü çözümlendi: $SUPABASE_VERSION"
@@ -101,7 +115,12 @@ print_header
 step "Hedef"
 echo "Node.js sürümü:       $NODE_VERSION"
 echo "Supabase kanalı:      $SUPABASE_CHANNEL"
-echo "Supabase CLI sürümü:  $SUPABASE_VERSION"
+
+if [ "$SUPABASE_CHANNEL" = "pinned" ]; then
+  echo "Supabase CLI sürümü:  ${SUPABASE_VERSION:-belirtilmedi}"
+else
+  echo "Supabase CLI sürümü:  otomatik çözümlenecek"
+fi
 
 if ! ask_yes_no "Kuruluma devam edilsin mi?" "Y"; then
   warn "Kurulum iptal edildi."
@@ -149,14 +168,14 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
 
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null << EOF
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF_DOCKER_SOURCE
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
 Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
-EOF
+EOF_DOCKER_SOURCE
 
 sudo apt update
 ok "Docker apt deposu eklendi"
@@ -195,7 +214,7 @@ else
   fail "fnm kurulumu başarısız oldu"
 fi
 
-if ! grep -q 'fnm env' "$HOME/.bashrc"; then
+if ! grep -q 'fnm env' "$HOME/.bashrc" 2>/dev/null; then
   {
     echo ''
     echo '# fnm'
@@ -224,14 +243,22 @@ require_command pnpm
 ok "pnpm kuruldu: $(pnpm -v)"
 
 step "11. Deno kuruluyor"
-if ! command -v deno > /dev/null 2>&1; then
-  curl -fsSL https://deno.land/install.sh | sh
-fi
-
 export DENO_INSTALL="$HOME/.deno"
 export PATH="$DENO_INSTALL/bin:$PATH"
 
-if ! grep -q 'DENO_INSTALL' "$HOME/.bashrc"; then
+if ! command -v deno > /dev/null 2>&1 || ! deno --version > /dev/null 2>&1; then
+  warn "Deno bulunamadı veya mevcut binary bozuk; yeniden kuruluyor"
+
+  rm -f \
+    "$DENO_INSTALL/bin/deno" \
+    "$DENO_INSTALL/bin/deno.zip"
+
+  curl -fsSL https://deno.land/install.sh | sh
+else
+  ok "Deno zaten kurulu"
+fi
+
+if ! grep -q 'DENO_INSTALL' "$HOME/.bashrc" 2>/dev/null; then
   {
     echo ''
     echo '# deno'
@@ -243,23 +270,29 @@ if ! grep -q 'DENO_INSTALL' "$HOME/.bashrc"; then
 fi
 
 require_command deno
+
+if ! deno --version > /dev/null 2>&1; then
+  fail "Deno kurulumu doğrulanamadı"
+fi
+
 ok "Deno kuruldu: $(deno --version | head -n 1)"
 
 step "12. Supabase CLI standalone binary kuruluyor"
-
 SUPABASE_ARCH="$(uname -m)"
 
 case "$SUPABASE_ARCH" in
   x86_64)
-    SUPABASE_ASSET="supabase_linux_amd64.tar.gz"
+    SUPABASE_PLATFORM="linux_amd64"
     ;;
   aarch64 | arm64)
-    SUPABASE_ASSET="supabase_linux_arm64.tar.gz"
+    SUPABASE_PLATFORM="linux_arm64"
     ;;
   *)
     fail "Desteklenmeyen mimari: $SUPABASE_ARCH"
     ;;
 esac
+
+SUPABASE_ASSET="supabase_${SUPABASE_VERSION}_${SUPABASE_PLATFORM}.tar.gz"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -274,11 +307,12 @@ for binary in supabase supabase-go; do
   if [ ! -f "$TMP_DIR/$binary" ]; then
     fail "Arşiv içinde $binary bulunamadı"
   fi
-
-  sudo install -m 0755 \
-    "$TMP_DIR/$binary" \
-    "/usr/local/bin/$binary"
 done
+
+sudo install -m 0755 \
+  "$TMP_DIR/supabase" \
+  "$TMP_DIR/supabase-go" \
+  /usr/local/bin/
 
 hash -r
 
@@ -288,11 +322,18 @@ if [ ! -x /usr/local/bin/supabase-go ]; then
   fail "supabase-go kurulamadı"
 fi
 
-ok "Supabase CLI kuruldu: $(supabase --version)"
+if ! env -u SUPABASE_GO_BINARY \
+  /usr/local/bin/supabase completion bash > /dev/null 2>&1; then
+  fail "Supabase CLI, supabase-go yönlendirme testini geçemedi"
+fi
+
+ok "Supabase CLI kuruldu: $(/usr/local/bin/supabase --version)"
 
 step "13. Kurulum kontrolleri"
-check_command "Supabase CLI yolu" "which supabase"
-check_command "Supabase CLI sürümü" "supabase --version"
+check_command "Supabase CLI yolu" "command -v supabase"
+check_command "Supabase CLI sürümü" "/usr/local/bin/supabase --version"
+check_command "Supabase Go sidecar" "test -x /usr/local/bin/supabase-go && echo /usr/local/bin/supabase-go"
+check_command "Supabase yönlendirme testi" "env -u SUPABASE_GO_BINARY /usr/local/bin/supabase completion bash >/dev/null && echo başarılı"
 check_command "Docker sürümü" "docker --version"
 check_command "Docker Compose sürümü" "docker compose version"
 check_command "Node.js sürümü" "node -v"
@@ -302,7 +343,7 @@ check_command "PostgreSQL client sürümü" "psql --version"
 
 step "14. İsteğe bağlı Docker testi"
 if ask_yes_no "Docker hello-world testi çalıştırılsın mı? Grup yetkisi aktif değilse reboot sonrası çalışabilir." "N"; then
-  docker run hello-world || warn "Docker testi başarısız oldu. Reboot veya logout/login sonrası tekrar dene."
+  docker run --rm hello-world || warn "Docker testi başarısız oldu. Reboot veya logout/login sonrası tekrar dene."
 fi
 
 step "Tamamlandı"
@@ -313,8 +354,9 @@ warn "Önemli sonraki adım:"
 echo "  sudo reboot"
 echo ""
 echo "Reboot sonrası kontrol için:"
-echo "  which supabase"
+echo "  command -v supabase"
 echo "  supabase --version"
+echo "  supabase completion bash >/dev/null && echo tamam"
 echo "  docker --version"
 echo "  docker compose version"
 echo "  node -v"
